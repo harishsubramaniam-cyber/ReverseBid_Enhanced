@@ -1,0 +1,482 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if auction else 'New' }} auction — {{ app_name }}{% endblock %}
+
+{# One place to decide where each value comes from: what was just typed (prefill,
+   after a rejected submission), then the saved auction, then a sensible default. #}
+{% set pf = prefill %}
+{% set line_rows = pf.lines if pf else lines %}
+{% set picked = pf.vendor_ids if pf else (selected_vendors or []) %}
+{% set over = pf.overrides if pf else (overrides or {}) %}
+{% set landed_on = (pf.compare_landed if pf else (auction.compare_landed if auction else false)) %}
+
+{# One place to decide what goes in an adder box: what was typed, then what was
+   saved against this auction, then the vendor's usual figure. #}
+{% macro adder_value(vendor, field) -%}
+  {%- if pf and pf.adders.get(vendor.id) is not none -%}
+    {{ pf.adders[vendor.id].get(field, '') }}
+  {%- elif saved_adders and saved_adders.get(vendor.id) -%}
+    {{ saved_adders[vendor.id][field] or '' }}
+  {%- else -%}
+    {{ vendor['default_' ~ field] or '' }}
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro adder_basis(vendor, field) -%}
+  {%- if pf and pf.adders.get(vendor.id) and pf.adders[vendor.id].get(field ~ '_basis') -%}
+    {{ pf.adders[vendor.id][field ~ '_basis'] }}
+  {%- elif saved_adders and saved_adders.get(vendor.id) -%}
+    {{ saved_adders[vendor.id][field ~ '_basis'] or 'unit' }}
+  {%- else -%}
+    {{ vendor['default_' ~ field ~ '_basis'] or 'unit' }}
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro flag(key, default) -%}
+  {{ 'checked' if (pf[key] if pf else (auction[key] if auction else default)) }}
+{%- endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <div class="grow">
+    {% if auction %}<div class="eyebrow">{{ auction.reference }}</div>{% endif %}
+    <h1>{{ 'Edit this auction' if auction else 'Create an auction' }}</h1>
+    <p class="sub">Four short sections. Nothing is emailed to anyone until you press Publish.</p>
+  </div>
+  <button type="button" class="helpbtn" onclick="openDrawer('help-drawer')">
+    <svg><use href="#i-help"/></svg>What is a reverse auction?</button>
+</div>
+
+{% if error %}
+<div class="alert error" id="form-error" role="alert">
+  <svg><use href="#i-alert"/></svg>
+  <div><b>That did not save.</b> {{ error }}</div>
+</div>
+{% endif %}
+
+<form method="post" id="auction-form" novalidate
+      action="{{ '/auctions/' ~ auction.id ~ '/edit' if auction else '/auctions/new' }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+<!-- 1 ---------------------------------------------------------------------- -->
+<section class="step-card">
+  <div class="head"><span class="n">1</span><h2>What are you buying?</h2></div>
+
+  <div class="field {{ 'bad' if error_field == 'title' }}">
+    <label for="title">Title</label>
+    <input id="title" name="title" maxlength="250" placeholder="e.g. Corrugated boxes — Q3 volumes"
+           value="{{ pf.title if pf else (auction.title if auction else '') }}">
+    <p class="hint">{{ FIELD_HELP.title }}</p>
+  </div>
+
+  <div class="field">
+    <label for="description">Description <span class="optional">(optional)</span></label>
+    <textarea id="description" name="description"
+      placeholder="Anything bidders should know before they price it.">{{ pf.description if pf else (auction.description if auction else '') }}</textarea>
+    <p class="hint">{{ FIELD_HELP.description }}</p>
+  </div>
+
+  <div class="field">
+    <label for="terms">Terms <span class="optional">(optional)</span></label>
+    <textarea id="terms" name="terms"
+      placeholder="Payment terms, delivery, warranty…">{{ pf.terms if pf else (auction.terms if auction else '') }}</textarea>
+    <p class="hint">{{ FIELD_HELP.terms }}</p>
+  </div>
+</section>
+
+<!-- 2 ---------------------------------------------------------------------- -->
+<section class="step-card">
+  <div class="head"><span class="n">2</span><h2>Items and quantities</h2><span class="spacer"></span>
+    <button type="button" class="btn ghost sm" onclick="openModal('m-item')">
+      <svg><use href="#i-plus"/></svg>Create a new item</button>
+    <button type="button" class="btn ghost sm" onclick="openModal('m-unit')">
+      <svg><use href="#i-plus"/></svg>Create a new unit</button>
+  </div>
+
+  <div class="alert info" style="margin-bottom:14px"><svg><use href="#i-info"/></svg>
+    <div>Buying something that is not in the list yet? Press <b>Create a new item</b> — it is
+    saved and added to this auction straight away. The <b>starting price</b> is your ceiling,
+    the most you will pay per unit, and it is <b>optional</b>: leave it empty and bidders open at
+    any price, with savings measured from the highest bid you receive.</div></div>
+
+  <div id="line-rows">
+    {% for line in line_rows %}
+    <div class="item-row">
+      <div class="top"><span class="li-num">{{ loop.index }}</span><b>Item {{ loop.index }}</b>
+        <span style="flex:1"></span>
+        <button type="button" class="linkbtn quiet" onclick="removeLineRow(this)">Remove</button></div>
+      <div class="row">
+        <div style="flex:2.2"><label>Item</label>
+          <select name="line_item_id" class="sel-item">
+            <option value="">Choose an item…</option>
+            {% for item in items %}<option value="{{ item.id }}"
+              {{ 'selected' if line.item_id and item.id|string == line.item_id|string }}>{{ item.name }}</option>{% endfor %}
+          </select></div>
+        <div style="max-width:120px"><label>Unit</label>
+          <select name="line_unit_id" class="sel-unit"><option value="">—</option>
+            {% for unit in units %}<option value="{{ unit.id }}"
+              {{ 'selected' if line.unit_id and unit.id|string == line.unit_id|string }}>{{ unit.code }}</option>{% endfor %}
+          </select></div>
+        <div style="max-width:150px"><label>Quantity</label>
+          <input type="number" step="any" min="0.0001" name="line_qty" value="{{ line.qty if line.qty is not none else 1 }}"></div>
+        <div style="max-width:190px"><label>Starting price <span class="optional">(optional)</span></label>
+          <input type="number" step="0.01" min="0.01" name="line_price" placeholder="No ceiling"
+                 value="{{ line.starting_price if line.starting_price is not none else '' }}"></div>
+      </div>
+      <input type="text" name="line_spec" placeholder="Specification (optional)"
+             style="margin-top:9px" value="{{ line.specification or '' }}">
+    </div>
+    {% endfor %}
+
+    {% if not line_rows %}
+    <div class="item-row">
+      <div class="top"><span class="li-num">1</span><b>Item 1</b><span style="flex:1"></span>
+        <button type="button" class="linkbtn quiet" onclick="removeLineRow(this)">Remove</button></div>
+      <div class="row">
+        <div style="flex:2.2"><label>Item</label>
+          <select name="line_item_id" class="sel-item"><option value="">Choose an item…</option>
+            {% for item in items %}<option value="{{ item.id }}">{{ item.name }}</option>{% endfor %}</select></div>
+        <div style="max-width:120px"><label>Unit</label>
+          <select name="line_unit_id" class="sel-unit"><option value="">—</option>
+            {% for unit in units %}<option value="{{ unit.id }}">{{ unit.code }}</option>{% endfor %}</select></div>
+        <div style="max-width:150px"><label>Quantity</label>
+          <input type="number" step="any" min="0.0001" name="line_qty" value="1">
+          <p class="hint">{{ FIELD_HELP.qty }}</p></div>
+        <div style="max-width:190px"><label>Starting price <span class="optional">(optional)</span></label>
+          <input type="number" step="0.01" min="0.01" name="line_price" placeholder="No ceiling">
+          <p class="hint">{{ FIELD_HELP.starting_price }}</p></div>
+      </div>
+      <input type="text" name="line_spec" placeholder="Specification (optional)" style="margin-top:9px">
+    </div>
+    {% endif %}
+  </div>
+  <div class="btn-row" style="margin-top:4px">
+    <button type="button" class="btn ghost" onclick="addLineRow()">
+      <svg><use href="#i-plus"/></svg>Add another row</button>
+    <button type="button" class="btn ghost" onclick="openModal('m-item')">
+      <svg><use href="#i-plus"/></svg>Create a new item</button>
+    <button type="button" class="btn ghost" onclick="openModal('m-unit')">
+      <svg><use href="#i-plus"/></svg>Create a new unit</button>
+    <span class="muted small" style="flex:1; min-width:200px">Use <b>Add another row</b> for an
+      item already in your list; <b>Create a new item</b> for one that is not.</span>
+  </div>
+</section>
+
+<!-- 3 ---------------------------------------------------------------------- -->
+<section class="step-card">
+  <div class="head"><span class="n">3</span><h2>Who is invited to bid?</h2><span class="spacer"></span>
+    <button type="button" class="btn ghost sm" onclick="openModal('m-vendor')">
+      <svg><use href="#i-plus"/></svg>Create a new vendor</button></div>
+  <p class="hint" style="margin:0 0 12px">{{ FIELD_HELP.vendors }}</p>
+
+  <div id="vendor-list" style="max-height:400px; overflow-y:auto">
+    {% for vendor in vendors %}
+    {% set addresses = [vendor.email] + email_list(vendor.extra_emails) %}
+    <div class="vendor-row">
+      <label class="check" style="margin-bottom:0">
+        <input type="checkbox" name="vendor_ids" value="{{ vendor.id }}"
+               {{ 'checked' if vendor.id in picked }}>
+        <span><span class="t">{{ vendor.name }}</span>
+          <span class="d">Emails go to {{ email_describe(addresses) }}</span></span>
+      </label>
+      <div class="vendor-override">
+        <input type="text" name="notify_emails_{{ vendor.id }}"
+               value="{{ (over.get(vendor.id) or '') | replace('\n', ', ') }}"
+               placeholder="Send this auction to a different address (optional)">
+      </div>
+      <div class="vendor-adders {{ 'on' if landed_on }}">
+        <div class="adder-head">Their delivery costs come from them</div>
+        <p class="muted tiny" style="margin:4px 0 0">Because this auction is decided on the
+          delivered price, each bidder fills in their own freight, packaging and other costs
+          for the whole auction, and the taxes on each item. You do not have to know them,
+          and they cannot be argued about afterwards — everything you see on the board
+          already has them in it.</p>
+      </div>
+    </div>
+    {% endfor %}
+    {% if not vendors %}
+      <div class="empty"><div class="icon"><svg><use href="#i-people"/></svg></div>
+        <h3>No vendors yet</h3>
+        <p class="small">Add one with the <b>+ New vendor</b> link above — a name and an email
+          is all it takes.</p></div>
+    {% endif %}
+  </div>
+  <p class="hint">{{ FIELD_HELP.notify_emails }}</p>
+
+  <div class="field {{ 'bad' if error_field == 'cc_emails' }}" style="margin-top:18px">
+    <label for="cc_emails">Copy my own team <span class="optional">(optional)</span></label>
+    <input id="cc_emails" type="text" name="cc_emails"
+           placeholder="head.procurement@yourcompany.com, finance@yourcompany.com"
+           value="{{ (pf.cc_emails if pf else (auction.cc_emails if auction else '')) | replace('\n', ', ') }}">
+    <p class="hint">{{ FIELD_HELP.cc_emails }}</p>
+  </div>
+</section>
+
+<!-- 4 ---------------------------------------------------------------------- -->
+<section class="step-card">
+  <div class="head"><span class="n">4</span><h2>Timing and bidding rules</h2></div>
+
+  <div class="row">
+    <div class="field {{ 'bad' if error_field == 'start_at' }}">
+      <label for="start_at">Bidding opens</label>
+      <input id="start_at" type="datetime-local" name="start_at"
+             value="{{ pf.start_at if pf else (to_local_string(auction.start_at) if auction else to_local_string(default_start)) }}">
+      <p class="hint">{{ FIELD_HELP.start_at }} Times are {{ tz_name }}.</p>
+    </div>
+    <div class="field {{ 'bad' if error_field == 'end_at' }}">
+      <label for="end_at">Bidding closes</label>
+      <input id="end_at" type="datetime-local" name="end_at"
+             value="{{ pf.end_at if pf else (to_local_string(auction.end_at) if auction else to_local_string(default_end)) }}">
+      <p class="hint">{{ FIELD_HELP.end_at }}</p>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="field"><label for="decrement_type">The minimum drop is a…</label>
+      {% set dt = pf.decrement_type if pf else (auction.decrement_type.value if auction else 'absolute') %}
+      <select id="decrement_type" name="decrement_type">
+        <option value="absolute" {{ 'selected' if dt == 'absolute' }}>Fixed amount ({{ currency }})</option>
+        <option value="percent" {{ 'selected' if dt == 'percent' }}>Percentage (%)</option>
+      </select><p class="hint">{{ FIELD_HELP.decrement_type }}</p></div>
+
+    <div class="field {{ 'bad' if error_field == 'min_decrement' }}">
+      <label for="min_decrement">Minimum decrement</label>
+      <input id="min_decrement" type="number" step="0.01" min="0" name="min_decrement"
+             value="{{ pf.min_decrement if pf else (auction.min_decrement if auction else 1) }}">
+      <p class="hint">{{ FIELD_HELP.min_decrement }}</p></div>
+
+    <div class="field {{ 'bad' if error_field == 'max_decrement' }}">
+      <label for="max_decrement">Maximum decrement</label>
+      <input id="max_decrement" type="number" step="0.01" min="0" name="max_decrement"
+             value="{{ pf.max_decrement if pf else (auction.max_decrement if auction else 0) }}">
+      <p class="hint">{{ FIELD_HELP.max_decrement }}</p></div>
+  </div>
+
+  <h4 style="margin:16px 0 8px">What bidders can see</h4>
+  <label class="check"><input type="checkbox" name="show_rank" {{ flag('show_rank', true) }}>
+    <span><span class="t">Show each bidder their rank</span>
+      <span class="d">{{ FIELD_HELP.show_rank }}</span></span></label>
+  <label class="check"><input type="checkbox" name="show_lowest_bid" {{ flag('show_lowest_bid', true) }}>
+    <span><span class="t">Show the current lowest price</span>
+      <span class="d">{{ FIELD_HELP.show_lowest_bid }}</span></span></label>
+  <label class="check"><input type="checkbox" name="hide_bidder_names" {{ flag('hide_bidder_names', true) }}>
+    <span><span class="t">Hide bidder names from each other</span>
+      <span class="d">{{ FIELD_HELP.hide_bidder_names }}</span></span></label>
+
+  <h4 style="margin:18px 0 8px">How prices are compared</h4>
+  <label class="check"><input type="checkbox" name="compare_landed" id="compare_landed"
+         {{ flag('compare_landed', false) }}>
+    <span><span class="t">Compare on the delivered price</span>
+      <span class="d">{{ FIELD_HELP.compare_landed }}</span></span></label>
+  <div class="alert info small {{ '' if landed_on }}" id="landed-note"
+       style="{{ '' if landed_on else 'display:none' }}">
+    <svg><use href="#i-info"/></svg>
+    <div>Each bidder is asked for their own <b>freight, packaging and other costs</b> — one
+    figure each for the whole auction, which is how a supplier quotes them — and for the
+    <b>taxes on each item</b>, as percentages. The board then ranks everyone on what you
+    would actually pay: the bid, plus that item's share of their delivery costs, plus tax.
+    The starting price means the most you will pay <b>all-in</b>, per unit.</div></div>
+
+  <h4 style="margin:18px 0 8px">How the business is handed out</h4>
+  {% set mode = (pf.award_mode if pf else (auction.award_mode if auction else 'line')) or 'line' %}
+  <label class="check"><input type="radio" name="award_mode" value="line"
+         {{ 'checked' if mode != 'basket' }}>
+    <span><span class="t">Item by item — each item to whoever is best on it</span>
+      <span class="d">{{ FIELD_HELP.award_mode_line }}</span></span></label>
+  <label class="check"><input type="radio" name="award_mode" value="basket"
+         {{ 'checked' if mode == 'basket' }}>
+    <span><span class="t">All of it to one supplier</span>
+      <span class="d">{{ FIELD_HELP.award_mode_basket }}</span></span></label>
+  <div class="alert info small"><svg><use href="#i-info"/></svg>
+    <div>Whichever you pick, the award screen shows you <b>both</b> totals side by side when
+    the bidding closes — what splitting the auction costs, what the cheapest single supplier
+    costs, and the difference. You can change your mind then.</div></div>
+
+  <h4 style="margin:18px 0 8px">How it closes</h4>
+  <label class="check"><input type="checkbox" name="auto_extend" {{ flag('auto_extend', true) }}>
+    <span><span class="t">Automatically extend on last-second bids</span>
+      <span class="d">{{ FIELD_HELP.auto_extend }}</span></span></label>
+  <div class="row">
+    <div class="field"><label for="extend_trigger_minutes">Extend if a bid lands in the last… (minutes)</label>
+      <input id="extend_trigger_minutes" type="number" step="0.5" min="0" name="extend_trigger_minutes"
+             value="{{ pf.extend_trigger_minutes if pf else ((auction.extend_trigger_seconds / 60) if auction else 2) }}"></div>
+    <div class="field {{ 'bad' if error_field == 'extend_by_minutes' }}">
+      <label for="extend_by_minutes">Add this much time (minutes)</label>
+      <input id="extend_by_minutes" type="number" step="0.5" min="0" name="extend_by_minutes"
+             value="{{ pf.extend_by_minutes if pf else ((auction.extend_by_seconds / 60) if auction else 3) }}"></div>
+    <div class="field"><label for="max_extensions">Most times the clock can move</label>
+      <input id="max_extensions" type="number" min="0" name="max_extensions"
+             value="{{ pf.max_extensions if pf else (auction.max_extensions if auction else 5) }}">
+      <p class="hint">{{ FIELD_HELP.max_extensions }}</p></div>
+  </div>
+</section>
+
+<div class="actionbar">
+  <button class="btn ghost lg" type="submit" name="action" value="draft">
+    {{ 'Save changes' if auction else 'Save as draft' }}</button>
+  {% if not auction or auction.status.value == 'draft' %}
+  <button class="btn lg" type="submit" name="action" value="publish" id="publish-btn">
+    <svg><use href="#i-spark"/></svg>Publish &amp; invite bidders</button>
+  {% endif %}
+  <a class="btn ghost lg" href="{{ '/auctions/' ~ auction.id if auction else '/auctions' }}">Cancel</a>
+  <span class="muted small" style="flex:1; min-width:200px">
+    <b>Save as draft</b> keeps it private. <b>Publish</b> emails every invited bidder — and opens
+    bidding at once if the opening time has already passed.</span>
+</div>
+</form>
+
+<!-- inline create ---------------------------------------------------------- -->
+<div class="modal" id="m-vendor"><div class="panel">
+  <h3>Create a new vendor</h3>
+  <p class="muted small">Saved to your vendor list <b>and invited to this auction</b>.
+    A name and an email is all we need.</p>
+  <form data-quick data-mode="vendor" action="/masters/quick/vendor">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field"><label>Company name</label><input name="name" required>
+      <p class="hint">{{ FIELD_HELP.vendor_name }}</p></div>
+    <div class="field"><label>Main email</label><input type="email" name="email" required>
+      <p class="hint">{{ FIELD_HELP.vendor_email }}</p></div>
+    <div class="field"><label>Also email <span class="optional">(optional, one per line)</span></label>
+      <textarea name="extra_emails" rows="2" placeholder="sales@vendor.com"></textarea></div>
+    <div class="btn-row"><button class="btn" type="submit">Save and select</button>
+      <button class="btn ghost" type="button" onclick="closeModal()">Cancel</button></div>
+  </form></div></div>
+
+<div class="modal" id="m-item"><div class="panel">
+  <h3>Create a new item</h3>
+  <p class="muted small">It is saved to your item list <b>and added to this auction</b> as a new
+    row. Just a name is enough — the rest can wait.</p>
+  <form data-quick data-mode="item" action="/masters/quick/item">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field"><label>Item name</label><input name="name" required>
+      <p class="hint">{{ FIELD_HELP.item_name }}</p></div>
+    <div class="field"><label>Default unit <span class="optional">(optional)</span></label>
+      <select name="default_unit_id"><option value="">—</option>
+        {% for unit in units %}<option value="{{ unit.id }}">{{ unit.code }}</option>{% endfor %}</select></div>
+    <div class="btn-row"><button class="btn" type="submit">Save and select</button>
+      <button class="btn ghost" type="button" onclick="closeModal()">Cancel</button></div>
+  </form></div></div>
+
+<div class="modal" id="m-unit"><div class="panel">
+  <h3>Create a new unit</h3>
+  <p class="muted small">A short code you measure in, like KG or NOS.</p>
+  <form data-quick data-mode="unit" action="/masters/quick/unit">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field"><label>Short code</label><input name="code" required placeholder="KG">
+      <p class="hint">{{ FIELD_HELP.unit_code }}</p></div>
+    <div class="field"><label>Full name <span class="optional">(optional)</span></label>
+      <input name="name" placeholder="Kilogram"></div>
+    <div class="btn-row"><button class="btn" type="submit">Save and select</button>
+      <button class="btn ghost" type="button" onclick="closeModal()">Cancel</button></div>
+  </form></div></div>
+
+<template id="line-template">
+  <div class="item-row">
+    <div class="top"><span class="li-num">+</span><b>Item</b><span style="flex:1"></span>
+      <button type="button" class="linkbtn quiet" onclick="removeLineRow(this)">Remove</button></div>
+    <div class="row">
+      <div style="flex:2.2"><label>Item</label>
+        <select name="line_item_id" class="sel-item" data-autoselect="0">
+          <option value="">Choose an item…</option>
+          {% for item in items %}<option value="{{ item.id }}">{{ item.name }}</option>{% endfor %}</select></div>
+      <div style="max-width:120px"><label>Unit</label>
+        <select name="line_unit_id" class="sel-unit" data-autoselect="0"><option value="">—</option>
+          {% for unit in units %}<option value="{{ unit.id }}">{{ unit.code }}</option>{% endfor %}</select></div>
+      <div style="max-width:150px"><label>Quantity</label>
+        <input type="number" step="any" min="0.0001" name="line_qty" value="1"></div>
+      <div style="max-width:190px"><label>Starting price <span class="optional">(optional)</span></label>
+        <input type="number" step="0.01" min="0.01" name="line_price" placeholder="No ceiling"></div>
+    </div>
+    <input type="text" name="line_spec" placeholder="Specification (optional)" style="margin-top:9px">
+  </div>
+</template>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Catch the obvious mistakes before the page reloads, so nothing typed is lost.
+(function () {
+  var form = document.getElementById("auction-form");
+  form.addEventListener("submit", function (e) {
+    var problems = [];
+    var title = form.querySelector("#title");
+    if (!title.value.trim()) problems.push([title, "Give the auction a title."]);
+
+    var rows = form.querySelectorAll("#line-rows .item-row");
+    var chosen = 0;
+    rows.forEach(function (row, i) {
+      var item = row.querySelector("[name=line_item_id]");
+      var qty = row.querySelector("[name=line_qty]");
+      var price = row.querySelector("[name=line_price]");
+      if (!item.value) { problems.push([item, "Item " + (i + 1) + ": choose an item, or remove the row."]); return; }
+      chosen++;
+      if (!qty.value || parseFloat(qty.value) <= 0)
+        problems.push([qty, "Item " + (i + 1) + ": the quantity has to be more than zero."]);
+      if (price.value && parseFloat(price.value) <= 0)
+        problems.push([price, "Item " + (i + 1) + ": leave the starting price empty, or make it more than zero."]);
+    });
+    if (!chosen) problems.push([rows[0] && rows[0].querySelector("[name=line_item_id]"),
+                                "Add at least one item — an auction needs something to bid on."]);
+
+    if (!form.querySelectorAll("[name=vendor_ids]:checked").length)
+      problems.push([document.getElementById("vendor-list"),
+                     "Tick at least one bidder. Only invited vendors can see the auction."]);
+
+    var start = form.querySelector("#start_at"), end = form.querySelector("#end_at");
+    if (!start.value) problems.push([start, "Set the time bidding opens."]);
+    else if (!end.value) problems.push([end, "Set the time bidding closes."]);
+    else if (end.value <= start.value)
+      problems.push([end, "The auction closes before it opens. Set the closing time later."]);
+
+    if (problems.length) {
+      e.preventDefault();
+      showProblem(problems[0][0], problems[0][1]);
+    }
+  });
+
+  // Show the per-bidder freight boxes only when they are going to be used.
+  var landedBox = document.getElementById("compare_landed");
+  if (landedBox) {
+    var syncLanded = function () {
+      document.querySelectorAll(".vendor-adders").forEach(function (el) {
+        el.classList.toggle("on", landedBox.checked);
+      });
+      var note = document.getElementById("landed-note");
+      if (note) note.style.display = landedBox.checked ? "" : "none";
+    };
+    landedBox.addEventListener("change", syncLanded);
+    syncLanded();
+  }
+
+  var publishBtn = document.getElementById("publish-btn");
+  if (publishBtn) {
+    publishBtn.addEventListener("click", function (e) {
+      if (!window.confirm("Publish this auction? Every invited bidder will be emailed.")) {
+        e.preventDefault();
+      }
+    });
+  }
+
+  function showProblem(el, message) {
+    document.querySelectorAll(".field.bad").forEach(function (f) { f.classList.remove("bad"); });
+    var banner = document.getElementById("form-error");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "form-error";
+      banner.className = "alert error";
+      banner.setAttribute("role", "alert");
+      banner.innerHTML = '<svg><use href="#i-alert"/></svg><div></div>';
+      form.parentNode.insertBefore(banner, form);
+    }
+    banner.querySelector("div").innerHTML = "<b>Not quite ready.</b> " + message;
+    if (el) {
+      var field = el.closest(".field");
+      if (field) field.classList.add("bad");
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      if (el.focus) setTimeout(function () { el.focus(); }, 250);
+    } else {
+      banner.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+})();
+</script>
+{% endblock %}

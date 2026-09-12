@@ -1,0 +1,470 @@
+{# The header clock and status pill sit outside this fragment, so the poller
+   reads the current values from here. #}
+<span id="board-state" hidden
+      data-deadline="{{ epoch(auction.end_at) }}" data-status="{{ auction.status.value }}"></span>
+{% set live = auction.status.value == 'live' %}
+{% set can_bid = live and user.is_vendor %}
+
+{% if auction.compare_landed and user.is_vendor and auction.status.value in ('live', 'scheduled') %}
+{# Freight is quoted for the consignment, not per pen, so it is asked for once
+   here and then shared across the items this bidder prices. #}
+<div class="line-card" id="my-charges">
+  <div class="line-head">
+    <span class="li-num"><svg style="width:15px;height:15px"><use href="#i-box"/></svg></span>
+    <div class="grow"><h3>Your delivery costs for this auction</h3>
+      <div class="muted small">This buyer compares suppliers on the <b>delivered</b> price, so
+        tell them what it costs to get the goods to them. One figure each, for the whole
+        auction — not per item. It is shared across <b>every item in the auction</b>, in
+        proportion to what each is worth, and you carry the share of the items you
+        actually price.</div></div>
+    {% if my_charges.any %}
+    <div class="price-tag"><div class="k">You are quoting</div>
+      <div class="v">{{ fmt_money(my_charges.total) }}</div>
+      <div class="muted tiny">on top of your prices</div></div>
+    {% endif %}
+  </div>
+  <div class="line-body">
+    <form method="post" action="/auctions/{{ auction.id }}/charges" class="charges-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="row">
+        <div><label for="ch-freight">Freight</label>
+          <div class="price-input"><span class="cur">{{ currency }}</span>
+            <input id="ch-freight" type="number" step="0.01" min="0" name="freight"
+                   value="{{ my_charges.freight or '' }}" placeholder="0.00"></div>
+          <p class="hint">Getting the whole consignment to the buyer.</p></div>
+        <div><label for="ch-packaging">Packaging</label>
+          <div class="price-input"><span class="cur">{{ currency }}</span>
+            <input id="ch-packaging" type="number" step="0.01" min="0" name="packaging"
+                   value="{{ my_charges.packaging or '' }}" placeholder="0.00"></div>
+          <p class="hint">Crates, pallets, wrapping — if you charge for them.</p></div>
+        <div><label for="ch-other">Other costs</label>
+          <div class="price-input"><span class="cur">{{ currency }}</span>
+            <input id="ch-other" type="number" step="0.01" min="0" name="other"
+                   value="{{ my_charges.other or '' }}" placeholder="0.00"></div>
+          <p class="hint">Anything else you must recover.</p></div>
+        <div><label for="ch-label">What is “other”? <span class="optional">(optional)</span></label>
+          <input id="ch-label" type="text" name="other_label" maxlength="60"
+                 value="{{ my_charges.other_label }}" placeholder="Insurance, unloading…">
+          <p class="hint">The buyer sees this wording.</p></div>
+      </div>
+      <div class="btn-row"><button class="btn" type="submit">Save my costs</button>
+        <span class="muted small">You can change these at any time while the auction is open —
+          your prices are worked out again straight away.</span></div>
+    </form>
+    {% if my_charges.any %}
+    <p class="muted small" style="margin-top:10px">
+      {{ my_charges.describe() }} — <b>{{ fmt_money(my_charges.total) }}</b> in all, shared
+      across every item by what it is worth. Each item below shows the slice it carries;
+      you are charged for the slices of the items you price.</p>
+    {% elif my_charges.declared %}
+    <p class="muted small" style="margin-top:10px">You have said delivery costs you nothing
+      extra, so your bid price is your delivered price.</p>
+    {% else %}
+    <p class="alert warn small" style="margin-top:10px">You have not filled these in yet. Until
+      you do, you are quoting as though delivery were free — which may be exactly right, but
+      the buyer will take it at face value.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% for entry in lines %}
+{% set line = entry.line %}
+{% set window = entry.window %}
+<div class="line-card">
+  <div class="line-head">
+    <span class="li-num">{{ loop.index }}</span>
+    <div class="grow">
+      <h3>{{ entry.label }}</h3>
+      <div class="muted small">
+        <b>{{ fmt_qty(line.qty) }} {{ line.unit.code if line.unit else 'unit(s)' }}</b>
+        {% if line.has_ceiling %}
+          · starting price {{ fmt_money(line.starting_price) }} per unit
+        {% else %}
+          · <span class="pill info" style="text-transform:none">no ceiling set</span>
+        {% endif %}
+        {% if line.specification %} · {{ line.specification }}{% endif %}
+      </div>
+      {% if entry.docs %}
+      <div class="muted small" style="margin-top:5px">
+        <svg style="width:14px;height:14px;vertical-align:-2px"><use href="#i-box"/></svg>
+        {% for doc in entry.docs %}<a href="/auctions/{{ auction.id }}/documents/{{ doc.id }}">{{ doc.filename }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {# Once it is decided, a bidder landing on this tab should not have to go
+       looking: say on the item itself whether they won it. #}
+    {% if user.is_vendor and auction.status.value == 'awarded' %}
+    <div class="price-tag">
+      {% set won = entry.result.award and entry.result.award.vendor_id == user.vendor_id %}
+      <div class="k">Outcome</div>
+      <div class="v" style="font-size:.95rem; color:var(--{{ 'good' if won else 'ink-3' }})">
+        {% if won %}You won this item
+        {% elif entry.result.award %}Went to another bidder
+        {% else %}Not awarded{% endif %}
+      </div>
+      {% if won %}<div class="muted tiny">{{ fmt_qty(line.qty) }}
+        {{ line.unit.code if line.unit else '' }} at
+        {{ fmt_money(entry.result.award.unit_price) }}</div>{% endif %}
+    </div>
+    {% elif entry.best %}
+    <div class="price-tag">
+      <div class="k">{{ 'Lowest delivered' if auction.compare_landed else 'Lowest bid' }}</div>
+      <div class="v">
+        {% if user.is_buyer_side or auction.show_lowest_bid or entry.my_rank == 1 %}
+          {{ fmt_money(compare_price(entry.best)) }}
+        {% else %}hidden{% endif %}
+      </div>
+      {% if user.is_buyer_side or auction.show_rank %}
+      <div class="muted tiny">{{ entry.ranked|length }} bidder(s)</div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="line-body">
+  <div class="grid {{ 'g2' if can_bid }}">
+    <div>
+      {% if user.is_buyer_side %}
+        {% if entry.ranked %}
+        <div class="table-wrap"><table>
+          <thead><tr><th>Rank</th><th>Bidder</th><th class="num">Quantity</th>
+            <th class="num">{{ 'Bid per unit' if auction.compare_landed else 'Unit price' }}</th>
+            {% if auction.compare_landed %}<th class="num">Delivery share</th>
+            <th class="num">Tax</th>
+            <th class="num">All-in per unit</th>{% endif %}
+            <th class="num">Line total</th><th>When</th>
+            <th class="num">vs start</th></tr></thead>
+          <tbody>
+          {% for bid in entry.ranked %}
+            <tr class="{{ 'is-best' if loop.index == 1 }}">
+              <td><span class="rank {{ 'l1' if loop.index == 1 }}{{ 'l2' if loop.index == 2 }}{{ 'l3' if loop.index == 3 }}">L{{ loop.index }}</span></td>
+              <td class="strong">{{ bid.vendor.name }}
+                <div class="muted tiny">{{ aliases.get(bid.vendor_id) }}</div></td>
+              <td class="num mono">{{ fmt_qty(line.qty) }} {{ line.unit.code if line.unit else '' }}</td>
+              <td class="num mono {{ '' if auction.compare_landed else 'strong' }}">{{ fmt_money(bid.unit_price) }}</td>
+              {% if auction.compare_landed %}
+              {% set cut = breakdown_for(line, bid.vendor_id, bid.unit_price) %}
+              <td class="num mono muted small">{{ fmt_money(cut.charge_share) }}</td>
+              <td class="num mono muted small">
+                {% if cut.taxes %}{{ fmt_money(cut.tax_total) }}
+                  <div class="tiny">{% for name, pct, amount in cut.taxes %}{{ name }} {{ '%g'|format(pct) }}%{% if not loop.last %} + {% endif %}{% endfor %}</div>
+                {% else %}—{% endif %}</td>
+              <td class="num mono strong">{{ fmt_money(compare_price(bid)) }}</td>
+              {% endif %}
+              <td class="num mono">{{ fmt_money(compare_price(bid) * line.qty) }}</td>
+              <td class="small">{{ fmt_dt(bid.created_at, False) }}</td>
+              <td class="num mono" style="color:var(--good)">
+                {% if line.has_ceiling %}
+                  −{{ '%.1f'|format((line.starting_price - compare_price(bid)) / line.starting_price * 100) }}%
+                {% else %}—{% endif %}</td>
+            </tr>
+          {% endfor %}
+          </tbody></table></div>
+        {% else %}
+          <div class="empty" style="padding:26px">
+            <div class="icon"><svg><use href="#i-clock"/></svg></div>
+            <h3>No bids yet on this item</h3>
+            <p class="small">{{ 'Bidders have been invited and can bid as soon as it opens.' if not live else 'The first bid will appear here within seconds.' }}</p>
+          </div>
+        {% endif %}
+
+      {% else %}
+        <div class="table-wrap"><table>
+          <thead><tr><th>Where things stand</th><th class="num">Price per unit</th></tr></thead>
+          <tbody>
+            {% if line.has_ceiling %}
+            <tr><td>Starting price — the buyer's ceiling</td>
+              <td class="num mono">{{ fmt_money(line.starting_price) }}</td></tr>
+            {% else %}
+            <tr><td>No ceiling — you may open at any price</td><td class="num muted">—</td></tr>
+            {% endif %}
+            {% if auction.show_lowest_bid and entry.best %}
+            <tr class="is-best"><td>Current lowest {{ 'delivered price' if auction.compare_landed else 'bid' }}</td>
+              <td class="num mono strong">{{ fmt_money(compare_price(entry.best)) }}</td></tr>
+            {% endif %}
+            {% if entry.mine %}
+            <tr class="is-mine"><td>Your best bid
+                {% if auction.show_rank and entry.my_rank %}
+                  <span class="rank {{ 'l1' if entry.my_rank == 1 }}">L{{ entry.my_rank }}</span>{% endif %}</td>
+              <td class="num mono strong">{{ fmt_money(entry.mine.unit_price) }}</td></tr>
+            {% if auction.compare_landed and entry.my_quote %}
+            {% set cut = entry.my_quote %}
+            <tr><td class="muted small">Your bid, for all
+                {{ fmt_qty(line.qty) }}</td>
+              <td class="num mono muted small">{{ fmt_money(cut.bare_total) }}</td></tr>
+            {% if cut.charge_share %}
+            <tr><td class="muted small">This item's share of your
+                {{ fmt_money(my_charges.total) }} delivery costs</td>
+              <td class="num mono muted small">+{{ fmt_money(cut.charge_share) }}</td></tr>
+            {% endif %}
+            {% for name, pct, amount in cut.taxes %}
+            <tr><td class="muted small">{{ name }} at {{ '%g'|format(pct) }}%</td>
+              <td class="num mono muted small">+{{ fmt_money(amount) }}</td></tr>
+            {% endfor %}
+            <tr><td>All-in, delivered and taxed — what you are ranked on</td>
+              <td class="num mono strong">{{ fmt_money(cut.all_in_total) }}
+                <div class="tiny muted">{{ fmt_money(cut.all_in_unit) }} per unit</div></td></tr>
+            {% endif %}
+            {% if not (auction.compare_landed and entry.my_quote) %}
+            <tr><td class="muted small">Your line total at that price</td>
+              <td class="num mono muted small">{{ fmt_money(compare_price(entry.mine) * line.qty) }}</td></tr>
+            {% endif %}
+            {% else %}
+            <tr><td class="muted">You have not bid on this item yet</td><td class="num muted">—</td></tr>
+            {% endif %}
+            {% if auction.show_rank %}
+            <tr><td class="muted small">Bidders on this item</td>
+              <td class="num muted small">{{ entry.ranked|length }}</td></tr>
+            {% endif %}
+          </tbody></table></div>
+      {% endif %}
+    </div>
+
+    {% if can_bid %}
+    <div>
+      <div class="bidbox {{ 'leading' if entry.my_rank == 1 }}">
+{# Position is the buyer's to give away. With "bidders see their rank" off,
+   neither the badge nor these notes may say where this bidder stands. #}
+        {% if auction.show_rank and entry.my_rank == 1 %}
+          <div class="lead-note"><svg style="width:17px;height:17px"><use href="#i-tick"/></svg>
+            You are L1 on this item — the lowest bid right now.</div>
+        {% elif auction.show_rank and entry.mine %}
+          <div class="behind-note"><svg style="width:17px;height:17px"><use href="#i-alert"/></svg>
+            You are at L{{ entry.my_rank }}. Go lower to take the lead.</div>
+        {% elif entry.mine %}
+          <div class="lead-note"><svg style="width:17px;height:17px"><use href="#i-tick"/></svg>
+            Your bid on this item is in. The buyer has not published the standings on this
+            auction.</div>
+        {% endif %}
+
+        {% if window.exhausted %}
+        <div class="range-note">
+          {% if window.landed and window.adders.any and window.reference_is_ceiling %}
+            {# Nothing to do with how far the bidding has gone: this bidder's own
+               delivered costs are larger than the whole starting price. Telling
+               them to bid lower would send them round in circles. #}
+            Your delivered costs — <b>{{ window.adders.describe() }}</b> — already use up
+            the whole starting price of <b>{{ fmt_money(window.reference) }}</b> delivered,
+            so there is no price you could offer on this item.
+            <div class="tiny" style="margin-top:4px">Ask the buyer to look at this item:
+              either the starting price or the delivery terms would have to change.</div>
+          {% elif window.blind %}
+            Bidding on this item has gone as far as it can — there is no price left that
+            would beat the standing bid by the minimum decrement.
+          {% else %}
+            Bidding on this item has gone as far as it can: the
+            {{ 'lowest bid' if not window.reference_is_ceiling else 'starting price' }} is
+            <b>{{ fmt_money(window.reference) }}</b>, and the
+            {{ fmt_money(window.min_step) }} minimum decrement would leave nothing to bid.
+          {% endif %}
+        </div>
+        {% else %}
+        <div class="range-note">
+          {% if window.open_ended %}
+            No ceiling and no bids yet — <b>name your opening price</b>. Every bid after yours
+            will have to come in lower.
+          {% elif window.reference_is_ceiling %}
+            First bid on this item. You can bid <b>{{ fmt_money(window.max_allowed) }} or less</b>
+            {%- if window.max_step %}, and no lower than {{ fmt_money(window.min_allowed) }} in one step{% endif %}.
+            {% if window.landed and window.adders.any %}
+            <div class="tiny" style="margin-top:4px">That is the delivered ceiling of
+              {{ fmt_money(window.reference) }} less your {{ window.adders.describe() }} —
+              type {{ fmt_money(window.max_allowed) }} and you land exactly on it.</div>
+            {% endif %}
+          {% elif window.blind %}
+            {# Every figure here is worked out from the standing bid, so with
+               "bidders see the lowest price" off there is nothing that can be
+               shown without handing that price over to the paisa. #}
+            The buyer has chosen not to show the lowest price on this auction.
+            Name your price: if it does not beat the standing bid by the minimum
+            decrement we will tell you so — without naming the price.
+            {% if line.has_ceiling %}
+            <div class="tiny" style="margin-top:4px">It must in any case be at or below the
+              starting price of {{ fmt_money(line.starting_price) }}
+              {{ 'delivered' if auction.compare_landed }}.</div>
+            {% endif %}
+          {% elif entry.my_rank == 1 %}
+            {# Already winning. The rules still say a new bid has to beat the
+               standing best - which is their own - but the standing best is
+               theirs, so spelling out "your bid must be X or less" reads as
+               the platform asking the leader to undercut themselves, and the
+               suggestion chip below used to fill that number in for them. #}
+            Nothing to beat: the lowest bid on this item is your own
+            {{ fmt_money(window.reference) }}. You can lower it if you want to — the next bid
+            would have to be {{ fmt_money(window.max_allowed) }} or less — but
+            {{ 'while you are L1' if auction.show_rank else 'while it stands' }}
+            there is nothing you need to do.
+          {% else %}
+            Your bid must be <b>{{ fmt_money(window.max_allowed) }} or less</b>
+            {%- if window.max_step %} and <b>{{ fmt_money(window.min_allowed) }} or more</b>{% endif %}.
+            <div class="tiny" style="margin-top:4px">
+              {% if window.landed and window.adders.any %}
+                The lowest delivered price is {{ fmt_money(window.reference) }}. To beat it by the
+                {{ fmt_money(window.min_step) }} minimum decrement with your
+                {{ window.adders.describe() }} on top, type
+                {{ fmt_money(window.max_allowed) }} — that lands at
+                {{ fmt_money(window.max_allowed_landed) }}.
+              {% else %}
+                That is the current best of {{ fmt_money(window.reference) }} minus the
+                {{ fmt_money(window.min_step) }} minimum decrement.
+              {% endif %}
+            </div>
+          {% endif %}
+        </div>
+
+        <form method="post" action="/auctions/{{ auction.id }}/bid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="line_id" value="{{ line.id }}">
+          <label for="p{{ line.id }}">Your price per {{ line.unit.code if line.unit else 'unit' }}</label>
+          <div class="price-input">
+            <span class="cur">{{ currency }}</span>
+            {# The allowed range rides as data- attributes, not min/max. With
+               max= set, a price above the ceiling made the browser block the
+               form with its own terse tooltip: to the bidder, Place bid simply
+               did nothing. The range is now checked here in the app's own
+               words, and again on the server. #}
+            <input id="p{{ line.id }}" type="number" step="0.01" min="0.01" name="unit_price"
+                   {# Both bounds are the standing bid in disguise, and the
+                      page source is one right-click away, so a blind auction
+                      sends neither. The server checks the bid regardless. #}
+                   {% if window.max_allowed and not window.blind %}data-max="{{ window.max_allowed }}"{% endif %}
+                   {% if window.max_step and not window.blind %}data-min="{{ window.min_allowed }}"{% endif %}
+                   data-currency="{{ currency }}"
+                   required placeholder="{{ 'Your price' if entry.my_rank == 1
+                      else (fmt_money(window.suggestion, False) if window.suggestion
+                            else 'Your price') }}"
+                   data-qty="{{ line.qty }}" data-total="total{{ line.id }}">
+            <button class="btn" type="submit">Place bid</button>
+          </div>
+          <p class="hint">{{ FIELD_HELP.bid_price }}
+            <span id="total{{ line.id }}"></span></p>
+          <p class="field-error" id="err{{ line.id }}" hidden></p>
+          {# No one-click chip while they are already L1: that is an invitation
+             to bid against themselves. #}
+          {% if window.suggestion and entry.my_rank != 1 %}
+          <button type="button" class="chip" data-fill="{{ window.suggestion }}"
+                  data-fill-target="#p{{ line.id }}">Use {{ fmt_money(window.suggestion) }}</button>
+          {% endif %}
+        </form>
+        {% endif %}
+      </div>
+
+      {% if auction.compare_landed %}
+      {# Taxes belong to the item, not the auction: a rope and a drum of oil
+         can sit in different slabs. The bidder names the rate; the money is
+         worked out, so the two can never disagree. #}
+      <div class="bidbox tax-box" data-tax-line="{{ line.id }}">
+        <b>Taxes on {{ entry.label }}</b>
+        <p class="muted small" style="margin:2px 0 8px">Type the rate — 18 for 18%. The amount
+          is worked out from the delivered value of this item, so you never have to.</p>
+        <form method="post" action="/auctions/{{ auction.id }}/lines/{{ line.id }}/taxes">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="tax-rows"
+               data-base="{{ entry.my_quote.delivered_total if entry.my_quote else 0 }}"
+               data-currency="{{ currency }}">
+            {% for tax in entry.my_taxes %}
+            <div class="tax-row">
+              <input type="text" name="tax_name" maxlength="60" value="{{ tax.name }}"
+                     placeholder="GST" aria-label="Tax name">
+              <input type="number" name="tax_percent" step="0.01" min="0" max="100"
+                     value="{{ '%g'|format(tax.percent) }}" placeholder="18"
+                     aria-label="Rate, per cent">
+              <span class="pct">%</span>
+              <span class="tax-amount muted mono small"></span>
+              <button type="button" class="linkbtn quiet" data-drop-tax>Remove</button>
+            </div>
+            {% endfor %}
+            <div class="tax-row">
+              <input type="text" name="tax_name" maxlength="60" placeholder="GST"
+                     aria-label="Tax name">
+              <input type="number" name="tax_percent" step="0.01" min="0" max="100"
+                     placeholder="18" aria-label="Rate, per cent">
+              <span class="pct">%</span>
+              <span class="tax-amount muted mono small"></span>
+              <button type="button" class="linkbtn quiet" data-drop-tax>Remove</button>
+            </div>
+          </div>
+          <div class="btn-row" style="margin-top:8px">
+            <button type="button" class="btn ghost sm" data-add-tax>Add another tax</button>
+            <button class="btn sm" type="submit">Save taxes</button>
+          </div>
+          {% if entry.my_quote and entry.my_quote.taxes %}
+          <p class="muted small" style="margin-top:8px">On your current bid that is
+            <b>{{ fmt_money(entry.my_quote.tax_total) }}</b> of tax on
+            {{ fmt_money(entry.my_quote.delivered_total) }} delivered —
+            <b>{{ fmt_money(entry.my_quote.all_in_total) }}</b> all in.</p>
+          {% endif %}
+        </form>
+      </div>
+      {% endif %}
+
+      {# Newest first: the bid a bidder wants to look at, or withdraw, is the
+         one they just placed - so it belongs at the top, not the bottom. #}
+      {% set mine = entry.history | selectattr('vendor_id','equalto',user.vendor_id)
+                                  | sort(attribute='created_at', reverse=True) | list %}
+      {% if mine %}
+      <details class="qa" style="margin-top:12px"><summary>Your bids on this item ({{ mine|length }})</summary>
+        <div class="a">
+          {% for bid in mine %}
+          <div style="display:flex; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid var(--line)">
+            <span class="mono strong" style="flex:1">{{ fmt_money(bid.unit_price) }}</span>
+            <span class="muted tiny">{{ fmt_dt(bid.created_at, False) }}</span>
+            {% if bid.withdrawn %}<span class="pill bad">withdrawn</span>
+            {% elif live %}
+            <form method="post" action="/auctions/{{ auction.id }}/bids/{{ bid.id }}/withdraw"
+                  data-confirm="Withdraw this bid? The buyer will be told and your rank recalculated.">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="linkbtn" type="submit">Withdraw</button></form>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div></details>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  {% if user.is_buyer_side and entry.history %}
+  <details class="qa" style="margin-top:14px"><summary>Every bid on this item ({{ entry.history|length }})</summary>
+    <div class="a"><div class="table-wrap"><table>
+      <thead><tr><th>When</th><th>Bidder</th><th class="num">Unit price</th>
+        <th class="num">Line total</th><th>Status</th></tr></thead><tbody>
+      {% for bid in entry.history|sort(attribute='created_at', reverse=True) %}
+        <tr><td class="small">{{ fmt_dt(bid.created_at, False) }}</td>
+          <td>{{ bid.vendor.name }}</td>
+          <td class="num mono">{{ fmt_money(bid.unit_price) }}</td>
+          <td class="num mono">{{ fmt_money(bid.total) }}</td>
+          <td>{% if bid.withdrawn %}<span class="pill bad">withdrawn</span>{% else %}<span class="pill good">live</span>{% endif %}</td></tr>
+      {% endfor %}
+    </tbody></table></div></div></details>
+  {% endif %}
+  </div>
+</div>
+{% endfor %}
+
+{% if user.is_buyer_side and overall %}
+<div class="card">
+  <div class="card-head"><h3>Overall standing</h3><span class="spacer"></span>
+    <span class="muted small">Each bidder's best prices added up. Bidders who priced every item
+      are ranked first.</span></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Rank</th><th>Bidder</th><th class="num">Items priced</th>
+      <th class="num">Total if they won it all</th><th class="num">vs baseline</th></tr></thead><tbody>
+    {% for row in overall %}
+      <tr class="{{ 'is-best' if loop.index == 1 }}">
+        <td><span class="rank {{ 'l1' if loop.index == 1 }}">L{{ loop.index }}</span></td>
+        <td class="strong">{{ vendor_by_id[row.vendor_id].name
+                              if row.vendor_id in vendor_by_id else '—' }}</td>
+        <td class="num mono">{{ row.lines }} of {{ lines|length }}</td>
+        <td class="num mono strong">{{ fmt_money(row.total) }}</td>
+        {# Against the baseline of the items they priced, not the whole
+           auction's - otherwise skipping an item reads as a saving. #}
+        <td class="num mono" style="color:var(--good)">{{ fmt_money(row.savings) }}
+          {% if not row.complete %}<div class="muted tiny">on the
+            {{ row.lines }} item{{ '' if row.lines == 1 else 's' }} they priced</div>{% endif %}
+        </td></tr>
+    {% endfor %}
+  </tbody></table></div>
+</div>
+{% endif %}

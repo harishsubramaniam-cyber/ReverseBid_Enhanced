@@ -1,0 +1,456 @@
+{% extends "base.html" %}
+{% block title %}{{ auction.reference }} — {{ auction.title }}{% endblock %}
+{% block wrapclass %}wide{% endblock %}
+{% block content %}
+{% set st = auction.status.value %}
+
+<div class="page-head">
+  <div class="grow">
+    <div class="muted small mono">{{ auction.reference }}</div>
+    <h1>{{ auction.title }}</h1>
+    <p class="sub"><span class="pill {{ st }}">{{ st.replace('_',' ') }}</span>
+      &nbsp;{{ auction.lines|length }} item(s) · {{ auction.participants|length }} invited bidder(s)
+      {% if auction.extensions_used %}· <span class="pill warn">extended {{ auction.extensions_used }}×</span>{% endif %}
+    </p>
+  </div>
+  <div class="btn-row">
+    {% if user.is_buyer_side %}
+      {% if auction.editable %}<a class="btn ghost" href="/auctions/{{ auction.id }}/edit">Edit</a>{% endif %}
+      {% if st == 'draft' %}
+        <form method="post" action="/auctions/{{ auction.id }}/publish"
+              data-confirm="Publish this auction and email every invited bidder?">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn lg" type="submit"><svg><use href="#i-spark"/></svg>Publish &amp; invite bidders</button></form>
+      {% endif %}
+      {% if st == 'scheduled' %}
+        <form method="post" action="/auctions/{{ auction.id }}/go-live"
+              data-confirm="Open bidding right now, ahead of the scheduled time?">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn" type="submit">Start bidding now</button></form>
+      {% endif %}
+      {% if st == 'live' %}
+        {# A live auction cannot be edited, so the clock needs its own way out
+           of the corner: later, never earlier. #}
+        <button class="btn ghost" onclick="openModal('m-more-time')">Give bidders more time</button>
+        <form method="post" action="/auctions/{{ auction.id }}/close-now"
+              data-confirm="Close bidding now? Bidders will not be able to bid again.">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn ghost" type="submit">Close bidding now</button></form>
+      {% endif %}
+      {% if st in ('closed','awarded') %}
+        <a class="btn good" href="/auctions/{{ auction.id }}/award">
+          {{ 'Revise award' if st == 'awarded' else 'Award this auction' }}</a>
+        <a class="btn ghost" href="/reports/auction/{{ auction.id }}">Report</a>
+      {% endif %}
+      {% if st not in ('awarded','cancelled') %}
+        <button class="btn ghost" onclick="openModal('m-cancel')">Cancel</button>
+      {% endif %}
+    {% endif %}
+  </div>
+</div>
+
+{% if st == 'live' %}
+<div class="countdown">
+  <div><div class="k">Time left</div>
+    <div class="clock" data-deadline="{{ epoch(auction.end_at) }}"></div></div>
+  <div><div class="k">Closes</div><div class="val">{{ fmt_dt(auction.end_at) }}</div></div>
+  {% if auction.auto_extend %}
+  <div><div class="k">Auto-extension</div><div class="val">+{{ (auction.extend_by_seconds/60)|round(1) }} min
+    if a bid lands in the last {{ (auction.extend_trigger_seconds/60)|round(1) }} min
+    ({{ auction.extensions_used }} of {{ auction.max_extensions }} used)</div></div>
+  {% endif %}
+  <div><div class="k">Bids so far</div><div class="val">{{ summary.total_bids }} from
+    {{ summary.active_bidders }} bidder(s)</div></div>
+</div>
+{% elif st == 'scheduled' %}
+<div class="alert info"><svg><use href="#i-clock"/></svg>
+  <div><b>Scheduled.</b> Invitations have gone out. Bidding opens {{ fmt_dt(auction.start_at) }}
+  — or press <b>Start bidding now</b> to open it early.</div></div>
+{% elif st == 'draft' %}
+<div class="alert warn"><svg><use href="#i-info"/></svg>
+  <div><b>This is still a draft.</b> Nobody has been told about it. Press
+  <b>Publish &amp; invite bidders</b> when you are ready — if the opening time has already
+  passed, bidding starts immediately.</div></div>
+{% elif st == 'cancelled' %}
+<div class="alert error"><svg><use href="#i-alert"/></svg>
+  <div>This auction was cancelled{% if auction.cancel_reason %}: {{ auction.cancel_reason }}{% endif %}</div></div>
+{% elif st == 'closed' %}
+<div class="alert info"><svg><use href="#i-info"/></svg>
+  <div><b>Bidding is closed.</b>{% if user.is_buyer_side %} Review the bids below, then
+  <a href="/auctions/{{ auction.id }}/award">award the business</a>.{% else %} The buyer is
+  reviewing the bids and will be in touch.{% endif %}</div></div>
+{% elif st == 'awarded' %}
+<div class="alert ok"><svg><use href="#i-tick"/></svg>
+  <div><b>Awarded</b> {{ fmt_dt(auction.awarded_at) }}. Everyone has been emailed the outcome.</div></div>
+{% endif %}
+
+{% if auction.compare_landed %}
+<div class="alert info"><svg><use href="#i-info"/></svg>
+  <div><b>Compared on the delivered price.</b>
+  {% if user.is_buyer_side %}Each bidder fills in their own freight, packaging and other
+    costs for the whole auction, and the taxes on each item. Those are added to what they
+    bid, so the ranking is like-for-like. The starting price is the most you will pay
+    all-in, per unit.
+  {% else %}You are ranked on what the buyer would actually pay: your bid, plus this item's
+    share of your delivery costs
+    {%- if my_charges.any %} ({{ my_charges.describe() }}, {{ fmt_money(my_charges.total) }}
+    for the auction){% endif %}, plus the taxes you declare on it. Fill both in below — the
+    box under each item then tells you exactly what to type.{% endif %}
+  </div></div>
+{% endif %}
+
+{% if user.is_buyer_side %}
+<div class="grid g4" style="margin-bottom:16px">
+  <div class="stat"><div class="k">Baseline</div><div class="v mono">{{ fmt_money(summary.baseline) }}</div>
+    <div class="h">{% if summary.open_lines %}Quantity × starting price, and the highest bid
+      where no ceiling was set{% else %}Quantity × starting price{% endif %}</div></div>
+  <div class="stat"><div class="k">{{ 'Awarded value' if summary.basis == 'awarded' else 'Best bids so far' }}</div>
+    <div class="v mono">{{ fmt_money(summary.final_value) }}</div><div class="h">Based on the {{ summary.basis }}</div></div>
+  <div class="stat hero"><div class="k">Savings</div><div class="v">{{ fmt_money(summary.savings) }}</div>
+    <div class="h">{{ '%.1f'|format(summary.savings_pct) }}% below baseline</div></div>
+  <div class="stat"><div class="k">Activity</div><div class="v mono">{{ summary.total_bids }}</div>
+    <div class="h">bids from {{ summary.active_bidders }} of {{ summary.participants }} bidders</div></div>
+</div>
+{% endif %}
+
+<div class="tabs">
+  <a href="?tab=bids" class="{{ 'on' if tab == 'bids' }}">{{ 'Bidding' if st == 'live' else 'Bids' }}</a>
+  <a href="?tab=details" class="{{ 'on' if tab == 'details' }}">Details</a>
+  <a href="?tab=documents" class="{{ 'on' if tab == 'documents' }}">Documents{% if docs %} ({{ docs|length }}){% endif %}</a>
+  {% if awards %}<a href="?tab=award" class="{{ 'on' if tab == 'award' }}">Award</a>{% endif %}
+  <a href="?tab=conversation" class="{{ 'on' if tab == 'conversation' }}">Conversation</a>
+  {% if user.is_buyer_side %}<a href="?tab=history" class="{{ 'on' if tab == 'history' }}">History &amp; audit</a>{% endif %}
+</div>
+
+{% if tab == 'bids' %}
+  <div id="live-board" {% if st == 'live' %}data-src="/auctions/{{ auction.id }}/live"{% endif %}>
+    {% include "partials/live_board.html" %}
+  </div>
+
+{% elif tab == 'details' %}
+  <div class="grid g2">
+    <div class="card">
+      <h3>What is being bought</h3>
+      {% if auction.description %}<p>{{ auction.description }}</p>{% else %}<p class="muted">No description given.</p>{% endif %}
+      <h3 style="margin-top:14px">Terms</h3>
+      {% if auction.terms %}<p>{{ auction.terms }}</p>{% else %}<p class="muted">No terms given.</p>{% endif %}
+    </div>
+    <div class="card">
+      <h3>The rules for this auction</h3>
+      <div class="table-wrap"><table><tbody>
+        <tr><td>Opens</td><td class="num">{{ fmt_dt(auction.start_at) }}</td></tr>
+        <tr><td>Closes</td><td class="num">{{ fmt_dt(auction.end_at) }}</td></tr>
+        <tr><td>Minimum decrement <span class="muted small">— how much lower each bid must be</span></td>
+          <td class="num">{% if auction.decrement_type.value == 'percent' %}{{ auction.min_decrement }}%{% else %}{{ fmt_money(auction.min_decrement) }}{% endif %}</td></tr>
+        <tr><td>Maximum decrement <span class="muted small">— biggest drop in one bid</span></td>
+          <td class="num">{% if auction.max_decrement %}{% if auction.decrement_type.value == 'percent' %}{{ auction.max_decrement }}%{% else %}{{ fmt_money(auction.max_decrement) }}{% endif %}{% else %}no limit{% endif %}</td></tr>
+        <tr><td>Bidders see their rank</td><td class="num">{{ 'yes' if auction.show_rank else 'no' }}</td></tr>
+        <tr><td>Bidders see the lowest price</td><td class="num">{{ 'yes' if auction.show_lowest_bid else 'no' }}</td></tr>
+        <tr><td>Bidder names hidden from each other</td><td class="num">{{ 'yes' if auction.hide_bidder_names else 'no' }}</td></tr>
+        <tr><td>Auto-extension</td><td class="num">{% if auction.auto_extend %}+{{ (auction.extend_by_seconds/60)|round(1) }} min, up to {{ auction.max_extensions }}×{% else %}off{% endif %}</td></tr>
+        <tr><td>Items without a ceiling</td><td class="num">{{ summary.open_lines }} of {{ auction.lines|length }}</td></tr>
+        <tr><td>Compared on <span class="muted small">— bid alone, or bid plus delivery</span></td>
+          <td class="num">{{ 'the delivered price' if auction.compare_landed else 'the bid itself' }}</td></tr>
+      </tbody></table></div>
+      {% if user.is_buyer_side %}
+      <h3 style="margin-top:14px">Invited bidders — and who we email</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Vendor</th><th>Alias shown to others</th><th>Emails go to</th>
+          {% if auction.compare_landed %}<th>Delivery costs they quoted</th>{% endif %}</tr></thead><tbody>
+        {% for part in auction.participants %}
+        <tr><td>{{ part.vendor.name }}</td><td class="muted">{{ aliases.get(part.vendor_id) }}</td>
+          <td class="small">
+            {% for address in recipients_for(part.vendor_id) %}<div>{{ address }}</div>{% endfor %}
+            {% if part.notify_emails %}<span class="pill warn">set for this auction</span>{% endif %}
+          </td>
+          {% if auction.compare_landed %}
+          {% set quoted = charges_for(part.vendor_id) %}
+          <td class="small">
+            {% if quoted.any %}{{ quoted.describe() }}
+              <div class="muted tiny">{{ fmt_money(quoted.total) }} for the whole auction,
+                shared across the items</div>
+            {% elif quoted.declared %}<span class="muted">nothing — their price is their
+              delivered price</span>
+            {% else %}<span class="pill warn">not filled in yet</span>{% endif %}
+          </td>
+          {% endif %}</tr>
+        {% endfor %}
+      </tbody></table></div>
+      <h3 style="margin-top:14px">Copied on this auction</h3>
+      {% if cc_list %}
+        <ul class="plain small" style="margin:0 0 6px; padding-left:18px">
+          {% for address in cc_list %}<li>{{ address }}</li>{% endfor %}</ul>
+        <p class="muted small">They get a copy when it is published, closed, awarded or cancelled.</p>
+      {% else %}
+        <p class="muted small">Nobody on your side is copied.
+          {% if auction.editable %}<a href="/auctions/{{ auction.id }}/edit">Add someone</a>.{% endif %}</p>
+      {% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+{% elif tab == 'award' %}
+  {% set awarded_vendors = awards | map(attribute='vendor_id') | unique | list %}
+  {% if user.is_buyer_side and choice.possible %}
+  {# What the decision cost, kept on the record. A buyer reviewing a finished
+     auction is entitled to see the road not taken, not just the one they
+     took. #}
+  <div class="card" id="award-choice">
+    <div class="card-head"><h3>What the choice cost</h3></div>
+    <div class="grid g2">
+      <div class="stat {{ 'chosen' if awarded_vendors|length > 1 }}">
+        <div class="h">Item by item — each to its own L1</div>
+        <div class="v">{{ fmt_money(choice.split_total) }}</div>
+        <div class="muted small">{{ choice.split_vendor_count }} supplier(s)</div>
+      </div>
+      <div class="stat {{ 'chosen' if awarded_vendors|length == 1 }}">
+        <div class="h">All of it to one supplier</div>
+        {% if choice.best_whole %}
+        <div class="v">{{ fmt_money(choice.best_whole.total) }}</div>
+        <div class="muted small">Cheapest single supplier:
+          <b>{{ choice.best_whole.name }}</b></div>
+        {% else %}
+        <div class="v muted">—</div>
+        <div class="muted small">Nobody priced every item.</div>
+        {% endif %}
+      </div>
+    </div>
+    {% if choice.best_whole and not choice.same_answer %}
+    <p class="muted small" style="margin-top:10px">The difference between the two is
+      <b>{{ fmt_money(choice.difference) }}</b>{% if choice.difference_percent is not none %}
+      ({{ '%.1f'|format(choice.difference_percent) }}%){% endif %}.
+      {# Both figures are worked out from the BIDS, not from what was actually
+         awarded: the buyer may have negotiated a different price, or picked
+         somebody other than L1. So this says what the two routes were worth,
+         and never claims it is what this award saved. #}
+      {% if awarded_vendors|length == 1 %}This auction went to one supplier.
+      {% else %}This auction was split between {{ awarded_vendors|length }} suppliers.
+      {% endif %}
+      Both figures are the bids as they stood at the close — what was actually awarded may
+      differ, if a price was negotiated or somebody other than the lowest bidder was
+      chosen.</p>
+    {% elif choice.same_answer %}
+    <p class="muted small" style="margin-top:10px">One supplier was best on every item, so
+      there was nothing to weigh up — the two routes cost exactly the same.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-head"><h3>Awarded</h3><span class="spacer"></span>
+      {% if user.is_buyer_side %}<a class="btn ghost sm" href="/auctions/{{ auction.id }}/award">Revise</a>{% endif %}</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Item</th><th>Awarded to</th><th class="num">Quantity</th>
+        <th class="num">Unit price</th><th class="num">Total</th>
+        {% if user.is_buyer_side %}<th>Your note</th>{% endif %}</tr></thead>
+      <tbody>
+      {% for award in awards %}
+        {% if user.is_buyer_side or award.vendor_id == user.vendor_id %}
+        <tr {% if award.vendor_id == user.vendor_id %}class="is-mine"{% endif %}>
+          <td class="strong">{{ award.line.item.name }}</td>
+          <td>{{ display_name(award.vendor) }}</td>
+          <td class="num mono">{{ fmt_qty(award.qty) }}
+            {{ award.line.unit.code if award.line.unit else '' }}</td>
+          <td class="num mono">{{ fmt_money(award.unit_price) }}</td>
+          <td class="num mono strong">{{ fmt_money(award.total) }}</td>
+          {% if user.is_buyer_side %}
+          {# Why this bidder, at this price. Typed on the award screen and
+             never shown back until now, which made it useless. #}
+          <td class="small">{% if award.notes %}{{ award.notes }}
+            {%- else %}<span class="muted">—</span>{% endif %}
+            {% if award.bid and award.unit_price < award.bid.unit_price %}
+            <div class="muted tiny">Awarded below their bid of
+              {{ fmt_money(award.bid.unit_price) }}</div>
+            {% elif award.bid and award.unit_price > award.bid.unit_price %}
+            <div class="muted tiny">Awarded above their bid of
+              {{ fmt_money(award.bid.unit_price) }}</div>
+            {% endif %}</td>
+          {% endif %}
+        </tr>
+        {% endif %}
+      {% endfor %}
+      </tbody></table></div>
+    <p class="hint">Each item is awarded whole, to a single bidder.
+      {% if user.is_buyer_side %} Notes are yours alone — no bidder sees them.{% endif %}</p>
+  </div>
+
+{% elif tab == 'documents' %}
+  <div class="grid g2">
+    <div class="card">
+      <div class="card-head"><h3>{{ 'Drawings, specs and terms' if user.is_buyer_side else 'From the buyer' }}</h3></div>
+      {% set shared = docs | selectattr('vendor_id', 'none') | list %}
+      {% if shared %}
+      <div class="doc-list">
+        {% for doc in shared %}
+        <div class="doc">
+          <svg><use href="#i-box"/></svg>
+          <div class="name">
+            <b><a href="/auctions/{{ auction.id }}/documents/{{ doc.id }}">{{ doc.filename }}</a></b>
+            <span class="muted tiny">{{ doc.size_label }}
+              {%- if doc.item %} · for {{ doc.item.name }}{% endif %}
+              {%- if doc.note %} · {{ doc.note }}{% endif %}
+              · added {{ fmt_dt(doc.created_at, False) }}</span>
+          </div>
+          {% if user.is_buyer_side %}
+          <form method="post" action="/auctions/{{ auction.id }}/documents/{{ doc.id }}/remove"
+                data-confirm="Remove “{{ doc.filename }}”? Bidders will no longer be able to download it.">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="linkbtn quiet" type="submit">Remove</button></form>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+        <div class="empty" style="padding:22px"><div class="icon"><svg><use href="#i-box"/></svg></div>
+          <h3>No documents yet</h3>
+          <p class="small">{{ 'Attach a drawing, a specification or your terms and every invited bidder can download it.' if user.is_buyer_side else 'The buyer has not attached anything to this auction.' }}</p></div>
+      {% endif %}
+
+      {% if user.is_buyer_side %}
+      <form method="post" action="/auctions/{{ auction.id }}/documents" enctype="multipart/form-data"
+            class="doc-drop" style="margin-top:14px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="field"><label for="files">Attach documents for the bidders</label>
+          <input id="files" type="file" name="files" multiple required>
+          <p class="hint">{{ FIELD_HELP.documents }}</p></div>
+        <div class="row">
+          <div class="field" style="max-width:280px"><label for="item_id">About one item only <span class="optional">(optional)</span></label>
+            <select id="item_id" name="item_id"><option value="">The whole auction</option>
+              {% for line in auction.lines %}<option value="{{ line.item_id }}">{{ line.item.name }}</option>{% endfor %}</select></div>
+          <div class="field"><label for="note">Note <span class="optional">(optional)</span></label>
+            <input id="note" name="note" placeholder="e.g. Revision C, supersedes rev B"></div>
+        </div>
+        <button class="btn" type="submit">Attach</button>
+      </form>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>{{ 'From the bidders' if user.is_buyer_side else 'Your documents' }}</h3>
+        <span class="spacer"></span>
+        <span class="muted small">{{ 'Only you can see these.' if user.is_buyer_side else 'Only the buyer sees these.' }}</span></div>
+      {% set theirs = docs | rejectattr('vendor_id', 'none') | list %}
+      {% if theirs %}
+      <div class="doc-list">
+        {% for doc in theirs %}
+        <div class="doc">
+          <svg><use href="#i-box"/></svg>
+          <div class="name">
+            <b><a href="/auctions/{{ auction.id }}/documents/{{ doc.id }}">{{ doc.filename }}</a></b>
+            <span class="muted tiny">{{ doc.size_label }}
+              {%- if user.is_buyer_side %} · from {{ doc.vendor.name }}{% endif %}
+              {%- if doc.note %} · {{ doc.note }}{% endif %}
+              · {{ fmt_dt(doc.created_at, False) }}</span>
+          </div>
+          {% if user.is_buyer_side or doc.vendor_id == user.vendor_id %}
+          <form method="post" action="/auctions/{{ auction.id }}/documents/{{ doc.id }}/remove"
+                data-confirm="Remove “{{ doc.filename }}”?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="linkbtn quiet" type="submit">Remove</button></form>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+        <p class="muted small">{{ 'No bidder has attached anything yet.' if user.is_buyer_side else 'Nothing attached yet.' }}</p>
+      {% endif %}
+
+      {% if user.is_vendor and st in ('scheduled','live','closed') %}
+      <form method="post" action="/auctions/{{ auction.id }}/documents" enctype="multipart/form-data"
+            class="doc-drop" style="margin-top:14px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="field"><label for="myfiles">Send a document to the buyer</label>
+          <input id="myfiles" type="file" name="files" multiple required>
+          <p class="hint">Technical compliance, a datasheet, your terms. No other bidder can
+            see what you attach here.</p></div>
+        <div class="field"><label for="mynote">Note <span class="optional">(optional)</span></label>
+          <input id="mynote" name="note" placeholder="e.g. Test certificate for the 5-ply spec"></div>
+        <button class="btn" type="submit">Attach</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+{% elif tab == 'conversation' %}
+  <div class="card" id="conversation">
+    <div class="card-head"><h3>Conversation</h3><span class="spacer"></span>
+      <span class="muted small">Private between {{ 'each bidder and you' if user.is_buyer_side else 'you and the buyer' }}.</span></div>
+    {% if user.is_buyer_side %}
+      {# Bidders who have written come first, so a buyer with twenty invited
+         suppliers does not have to hunt for the one waiting on an answer. #}
+      {% set talking = messages | map(attribute='vendor_id') | list %}
+      {% set ordered = auction.participants | rejectattr('vendor_id', 'in', talking) | list %}
+      {% for part in (auction.participants | selectattr('vendor_id', 'in', talking) | list) + ordered %}
+        {% set thread = messages | selectattr('vendor_id','equalto',part.vendor_id) | list %}
+        <details class="qa" {{ 'open' if thread }}>
+          <summary>{{ part.vendor.name }} <span class="muted">({{ thread|length }} message(s))</span></summary>
+          <div class="a">
+            {% for m in thread %}
+              <div class="msg {{ 'mine' if m.sender_id == user.id }}">
+                <div class="who">{{ m.sender.name }} · {{ fmt_dt(m.created_at) }}</div>{{ m.body }}</div>
+            {% endfor %}
+            <form method="post" action="/auctions/{{ auction.id }}/messages" style="margin-top:8px">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="vendor_id" value="{{ part.vendor_id }}">
+              <textarea name="body" placeholder="Reply to {{ part.vendor.name }}…" required></textarea>
+              <button class="btn sm" type="submit" style="margin-top:6px">Send</button>
+            </form>
+          </div>
+        </details>
+      {% endfor %}
+    {% else %}
+      {% for m in messages %}
+        <div class="msg {{ 'mine' if m.sender_id == user.id }}">
+          <div class="who">{{ m.sender.name }} · {{ fmt_dt(m.created_at) }}</div>{{ m.body }}</div>
+      {% endfor %}
+      {% if not messages %}<p class="muted">No messages yet. Ask the buyer anything about the
+        specification, quantities or terms.</p>{% endif %}
+      <form method="post" action="/auctions/{{ auction.id }}/messages" style="margin-top:10px">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <textarea name="body" placeholder="Write to the buyer…" required></textarea>
+        <button class="btn sm" type="submit" style="margin-top:6px">Send message</button>
+      </form>
+    {% endif %}
+  </div>
+
+{% elif tab == 'history' %}
+  <div class="card">
+    <div class="card-head"><h3>History and audit trail</h3><span class="spacer"></span>
+      <span class="muted small">Every action, unedited.</span></div>
+    <ul class="timeline">
+      {% for log in logs %}
+      <li><b>{{ log.action }}</b> — {{ log.actor_label }}
+        <div class="muted small">{{ fmt_dt(log.created_at) }}{% if log.ip %} · {{ log.ip }}{% endif %}</div>
+        {% if log.detail %}<div class="small mono" style="word-break:break-word">{{ log.detail }}</div>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+{% endif %}
+
+{% if st == 'live' and user.is_buyer_side %}
+<div class="modal" id="m-more-time"><div class="panel">
+  <h3>Give bidders more time</h3>
+  <p class="muted small">Bidding closes <b>{{ fmt_dt(auction.end_at) }}</b> at the moment.
+    Pick a later time and every invited bidder is emailed the new one. To finish sooner,
+    close bidding instead — the clock only moves outwards from here.</p>
+  <form method="post" action="/auctions/{{ auction.id }}/more-time">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field"><label for="new_end">New closing time</label>
+      <input id="new_end" type="datetime-local" name="end_at"
+             value="{{ to_local_string(auction.end_at + minutes(30)) }}" required></div>
+    <div class="btn-row"><button class="btn" type="submit">Move the closing time</button>
+      <button class="btn ghost" type="button" onclick="closeModal()">Leave it as it is</button></div>
+  </form></div></div>
+{% endif %}
+
+<div class="modal" id="m-cancel"><div class="panel">
+  <h3>Cancel this auction?</h3>
+  <p class="muted small">Every invited bidder is emailed, with your reason. This cannot be undone.</p>
+  <form method="post" action="/auctions/{{ auction.id }}/cancel">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field"><label>Reason</label>
+      <textarea name="reason" placeholder="e.g. Requirement withdrawn by the plant" required></textarea></div>
+    <div class="btn-row"><button class="btn danger" type="submit">Cancel the auction</button>
+      <button class="btn ghost" type="button" onclick="closeModal()">Keep it running</button></div>
+  </form></div></div>
+{% endblock %}

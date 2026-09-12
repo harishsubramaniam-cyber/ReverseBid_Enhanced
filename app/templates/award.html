@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+{% block title %}Award {{ auction.reference }} — {{ app_name }}{% endblock %}
+{% block wrapclass %}wide{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div class="grow">
+    <div class="eyebrow">{{ auction.reference }}</div>
+    <h1>Award the business</h1>
+    <p class="sub">Each item goes to <b>one</b> bidder, for the whole quantity.
+      {% if auction.award_mode == 'basket' %}This auction was set up to go to a
+      <b>single supplier</b>, so every item has to go to the same one.
+      {% else %}Different items can go to different bidders — or give the lot to one.{% endif %}</p>
+  </div>
+  <a class="btn ghost" href="/auctions/{{ auction.id }}">Back to the auction</a>
+</div>
+
+{% if auction.compare_landed %}
+{# Two honest views of the same auction. The bare prices are what the
+   suppliers wrote; the all-in prices are what gets paid. A buyer about to
+   commit money is entitled to both, and to be told which one decides it. #}
+<div class="card tight" id="price-basis">
+  <b class="small">Show prices:</b>
+  <a class="chip {{ 'on' if not bare }}" href="/auctions/{{ auction.id }}/award">
+    All-in — delivered and taxed</a>
+  <a class="chip {{ 'on' if bare }}" href="/auctions/{{ auction.id }}/award?basis=bare">
+    Bid only — no freight, packaging or tax</a>
+  <span class="muted small" style="flex:1; text-align:right">
+    {% if bare %}You are looking at the quotes as the suppliers wrote them.
+    {% else %}You are looking at what you would actually pay.{% endif %}</span>
+</div>
+{% if bare %}
+<div class="alert warn"><svg><use href="#i-alert"/></svg>
+  <div><b>These figures leave out freight, packaging and tax.</b> They are useful for seeing
+  who quoted keenest, and for checking a quote against what a supplier sent you — but they are
+  not what the business costs. <b>The award is decided on the all-in price</b>, and the ranks
+  below are the bare-price ranks, which may put a different bidder first.
+  {% if all_in_choice and all_in_choice.possible %}
+  All in, item by item comes to <b>{{ fmt_money(all_in_choice.split_total) }}</b>
+  {%- if all_in_choice.best_whole %}, and the cheapest single supplier to
+  <b>{{ fmt_money(all_in_choice.best_whole.total) }}</b>{% endif %}.
+  {% endif %}</div></div>
+{% endif %}
+{% endif %}
+
+{% if error %}
+<div class="alert error" role="alert"><svg><use href="#i-alert"/></svg>
+  <div><b>Nothing was awarded.</b> {{ error }} Everything else you chose is still below.</div></div>
+{% endif %}
+
+<div class="alert info"><svg><use href="#i-info"/></svg>
+  <div>Every line is pre-set to its <b>L1</b> — the lowest bidder. Change any of them below.
+  Nothing is sent until you press <b>Confirm award</b>; then winners are emailed what they won,
+  and everyone else gets a polite “not this time”.</div></div>
+
+
+{% if choice.possible %}
+{# The buyer has a real choice here and it is worth money. Show both totals
+   before they decide, not after. #}
+<div class="card" id="award-choice">
+  <div class="card-head"><h3>Split it, or give it all to one supplier?</h3>
+    {% if auction.compare_landed %}<span class="spacer"></span>
+    <span class="pill {{ 'warn' if choice.bare else 'good' }}">
+      {{ 'bid prices only' if choice.bare else 'all-in prices' }}</span>{% endif %}</div>
+  <div class="grid g2">
+    <div class="stat {{ 'chosen' if auction.award_mode != 'basket' }}">
+      <div class="h">Item by item — each to its own L1</div>
+      <div class="v">{{ fmt_money(choice.split_total) }}</div>
+      <div class="muted small">
+        {% if choice.split_vendor_count > 1 %}{{ choice.split_vendor_count }} suppliers,
+          {{ choice.priced_lines }} item(s)
+        {%- elif choice.one_supplier_best %}One supplier happens to be best on everything
+        {%- else %}{{ choice.priced_lines }} of {{ choice.lines }} item(s){% endif %}</div>
+    </div>
+    <div class="stat {{ 'chosen' if auction.award_mode == 'basket' }}">
+      <div class="h">All of it to one supplier</div>
+      {% if choice.best_whole %}
+      <div class="v">{{ fmt_money(choice.best_whole.total) }}</div>
+      <div class="muted small">Cheapest single supplier:
+        <b>{{ choice.best_whole.name }}</b></div>
+      {% else %}
+      <div class="v muted">—</div>
+      <div class="muted small">Nobody priced every item, so no single supplier can take the
+        whole auction.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if choice.unpriced %}
+  <div class="alert warn small" style="margin-top:12px"><svg><use href="#i-alert"/></svg>
+    <div><b>{{ choice.unpriced|length }} item(s) had no bids at all</b> —
+      {% for line in choice.unpriced %}{{ line.item.name }}{% if not loop.last %}, {% endif %}{% endfor %}.
+      Neither total below includes them, because there is no price to include. They cannot be
+      awarded to anybody.</div></div>
+  {% endif %}
+
+  {% if choice.best_whole %}
+    {% if choice.same_answer %}
+    <div class="alert ok small" style="margin-top:12px"><svg><use href="#i-tick"/></svg>
+      <div><b>The choice is free this time.</b> {{ choice.best_whole.name }} is best on every
+      item, so one supplier costs exactly the same as splitting it. Give them the lot.</div></div>
+    {% else %}
+    <div class="alert {{ 'warn' if auction.award_mode == 'basket' else 'info' }} small"
+         style="margin-top:12px"><svg><use href="#i-info"/></svg>
+      <div><b>Splitting it saves {{ fmt_money(choice.difference) }}</b>
+        {% if choice.difference_percent is not none %}({{ '%.1f'|format(choice.difference_percent) }}%)
+        {% endif %}against the cheapest single supplier. That is what dealing with one supplier instead of
+        {{ choice.split_vendor_count }} costs you here —
+        {% if auction.award_mode == 'basket' %}you chose to award this one whole, so it is the
+          price of that decision. Change the auction to award item by item if it is no longer
+          worth it.{% else %}worth weighing against one order, one delivery and one invoice.
+        {% endif %}</div></div>
+    {% endif %}
+  {% endif %}
+
+  {% if auction.award_mode == 'basket' and not choice.whole_possible %}
+  <div class="alert error small" style="margin-top:12px"><svg><use href="#i-alert"/></svg>
+    <div><b>No single supplier can take this auction.</b> Nobody priced every item that was
+      bid on, so a whole-auction award is not possible — however it was set up. Award it item
+      by item instead, and the bids you did get can still be used.</div></div>
+  {% endif %}
+
+  <p class="muted small" style="margin-top:12px">Set up to be awarded
+    <b>{{ 'to a single supplier' if auction.award_mode == 'basket' else 'item by item' }}</b>.
+    Changed your mind now the prices are in? Use the button under this panel.</p>
+
+  {% if choice.baskets %}
+  <div class="table-wrap" style="margin-top:10px"><table>
+    <thead><tr><th>If the whole auction went to…</th><th class="num">Items priced</th>
+      <th class="num">Their price for the lot</th>
+      <th class="num">Against splitting it</th><th></th></tr></thead>
+    <tbody>
+    {% for basket in choice.baskets %}
+      <tr class="{{ 'is-pick' if choice.best_whole and basket.vendor_id == choice.best_whole.vendor_id }}">
+        <td class="strong">{{ basket.name }}</td>
+        <td class="num mono">{{ basket.lines }} of {{ choice.lines }}</td>
+        <td class="num mono {{ 'strong' if basket.complete }}">
+          {{ fmt_money(basket.total) }}</td>
+        <td class="num mono">
+          {% if basket.complete %}
+            {% if basket.extra > 0.004 %}<span style="color:var(--bad)">+{{ fmt_money(basket.extra) }}</span>
+            {% else %}<span style="color:var(--good)">same</span>{% endif %}
+          {% else %}<span class="muted small">cannot take it all</span>{% endif %}</td>
+        <td>{% if basket.complete %}
+          <button type="button" class="chip"
+                  onclick="awardAll('{{ basket.vendor_id }}')">Give them the lot</button>
+        {% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody></table></div>
+  <p class="muted small" style="margin-top:6px">Every figure is the price this auction is
+    decided on{% if auction.compare_landed %} — delivered and taxed, as each bidder quoted
+    it{% endif %}. A bidder who did not price every item cannot be given the whole auction,
+    however good their prices are on the items they did quote.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if choice.possible %}
+{# Its own form, outside the award form: changing how the auction is awarded
+   must never ride along with an award. #}
+<form method="post" action="/auctions/{{ auction.id }}/award-mode" class="card tight"
+      style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="award_mode"
+         value="{{ 'line' if auction.award_mode == 'basket' else 'basket' }}">
+  <b class="small" style="flex:1">
+    {% if auction.award_mode == 'basket' %}This auction has to go to one supplier.
+    {% else %}This auction can be split between suppliers.{% endif %}</b>
+  <button class="btn ghost sm" type="submit">
+    {% if auction.award_mode == 'basket' %}Award it item by item instead
+    {% else %}Require a single supplier instead{% endif %}</button>
+</form>
+{% endif %}
+
+<form method="post" id="award-form" action="/auctions/{{ auction.id }}/award"
+      data-confirm="Confirm the award and email every bidder?">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="basis" value="{{ 'bare' if bare else 'all_in' }}">
+
+{% if bidders|length > 1 %}
+<div class="card tight" style="display:flex; gap:12px; flex-wrap:wrap; align-items:center">
+  <b class="small">Quick fill:</b>
+  <button type="button" class="chip" onclick="awardAll('')">Every item to its own L1</button>
+  {% for vendor_id, name in bidders %}
+    <button type="button" class="chip" onclick="awardAll('{{ vendor_id }}')">Everything to {{ name }}</button>
+  {% endfor %}
+  <span class="muted small" style="flex:1; text-align:right">You can still change any single item below.</span>
+</div>
+{% endif %}
+
+{% for row in rows %}
+  {% set line = row.line %}
+  <div class="line-card">
+    <div class="line-head">
+      <span class="li-num">{{ loop.index }}</span>
+      <div class="grow">
+        <h3>{{ row.label }}</h3>
+        <div class="muted small">
+          <b>{{ fmt_qty(line.qty) }} {{ line.unit.code if line.unit else 'unit(s)' }}</b>
+          {% if line.has_ceiling %} · starting price {{ fmt_money(line.starting_price) }} per unit{% else %} · no ceiling was set{% endif %}
+          · baseline {{ fmt_money(row.baseline) }}
+          {% if line.specification %} · {{ line.specification }}{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="line-body">
+      {% if row.ranked %}
+      <div class="table-wrap" style="margin-bottom:14px">
+        <table>
+          {# Ranked on delivered cost where the auction works that way, so every
+             money column here is delivered too. Mixing the two made the table
+             read L1, L2 with the prices beside them going the other way. #}
+          <thead><tr>
+            <th>{{ 'Rank on bid' if bare else 'Rank' }}</th><th>Bidder</th>
+            <th class="num">Quantity</th>
+            {% if auction.compare_landed %}
+              {% if bare %}<th class="num">Bid</th><th class="num">All-in, for reference</th>
+              {% else %}<th class="num">Bid</th><th class="num">All-in unit price</th>{% endif %}
+            {% else %}<th class="num">Unit price</th>{% endif %}
+            <th class="num">Line total</th>
+            <th class="num">{{ 'Saving, all-in' if auction.compare_landed else 'Saving' }}</th>
+            <th style="width:120px">Award to</th>
+          </tr></thead>
+          <tbody>
+          {% for entry in row.priced %}
+            <tr class="{{ 'is-best' if entry.bid.vendor_id == row.chosen }}">
+              <td><span class="rank {{ 'l1' if loop.index == 1 }}{{ 'l2' if loop.index == 2 }}{{ 'l3' if loop.index == 3 }}">L{{ loop.index }}</span></td>
+              <td class="strong">{{ entry.vendor.name }}
+                {% if bare and entry.bid.vendor_id == row.decided_leader %}
+                <div class="tiny" style="color:var(--good)">best all-in — the basis this is
+                  awarded on</div>{% endif %}</td>
+              <td class="num mono">{{ fmt_qty(line.qty) }} {{ line.unit.code if line.unit else '' }}</td>
+              {% if auction.compare_landed %}
+              <td class="num mono {{ 'strong' if bare }}">{{ fmt_money(entry.headline) }}
+                {% if entry.adders.any and not bare %}<div class="muted tiny">+ {{ entry.adders.describe() }}</div>{% endif %}</td>
+              <td class="num mono {{ 'muted' if bare else 'strong' }}">{{ fmt_money(entry.all_in) }}
+                {% if bare and entry.extras > 0.004 %}<div class="muted tiny">+{{ fmt_money(entry.extras) }} of extras</div>{% endif %}</td>
+              {% else %}
+              <td class="num mono strong">{{ fmt_money(entry.unit) }}</td>
+              {% endif %}
+              <td class="num mono">{{ fmt_money(entry.total) }}</td>
+              <td class="num mono" style="color:var(--{{ 'good' if entry.saving >= 0 else 'bad' }})">{{ fmt_money(entry.saving) }}</td>
+              <td>
+                <label class="check" style="margin:0; padding:6px 8px; justify-content:center">
+                  <input type="radio" name="winner_{{ line.id }}" value="{{ entry.bid.vendor_id }}"
+                         data-price="{{ entry.headline }}" data-line="{{ line.id }}"
+                         {% if entry.bid.vendor_id == row.decided_leader %}data-l1="1"{% endif %}
+                         {{ 'checked' if entry.bid.vendor_id == row.chosen }}>
+                  <span class="t" style="font-size:.82rem">{{ 'Winner' if entry.bid.vendor_id == row.chosen else 'Pick' }}</span>
+                </label>
+              </td>
+            </tr>
+          {% endfor %}
+            <tr>
+              <td></td>
+              <td class="muted" colspan="{{ 6 if auction.compare_landed else 5 }}">Do not award this item to anyone</td>
+              <td><label class="check" style="margin:0; padding:6px 8px; justify-content:center">
+                <input type="radio" name="winner_{{ line.id }}" value=""
+                       data-price="" data-line="{{ line.id }}" {{ 'checked' if not row.chosen }}>
+                <span class="t" style="font-size:.82rem">Skip</span></label></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="row">
+        <div class="field" style="max-width:230px; margin:0">
+          <label for="price_{{ line.id }}">Award price per unit ({{ currency }})</label>
+          <input id="price_{{ line.id }}" name="price_{{ line.id }}" type="number" step="0.01" min="0"
+                 value="{{ plain_money(row.price) }}">
+          <p class="hint">{{ FIELD_HELP.award_price }}</p>
+        </div>
+        <div class="field" style="margin:0">
+          <label for="note_{{ line.id }}">Note <span class="optional">(optional, seen by you only)</span></label>
+          <input id="note_{{ line.id }}" name="note_{{ line.id }}" value="{{ row.note or '' }}">
+        </div>
+      </div>
+
+      {% else %}
+        <div class="empty" style="padding:22px">
+          <div class="icon"><svg><use href="#i-box"/></svg></div>
+          <h3>No bids on this item</h3>
+          <p class="small">There is nothing to award here. It will be left out.</p>
+        </div>
+        <input type="hidden" name="winner_{{ line.id }}" value="">
+      {% endif %}
+    </div>
+  </div>
+{% endfor %}
+
+<div class="actionbar">
+  <button class="btn gold lg" type="submit"><svg><use href="#i-tick"/></svg>Confirm award &amp; email everyone</button>
+  <a class="btn ghost" href="/auctions/{{ auction.id }}">Not yet</a>
+  <span class="muted small" style="flex:1; text-align:right">
+    Baseline {{ fmt_money(summary.baseline) }} · best bids {{ fmt_money(summary.final_value) }}
+    · potential saving <b style="color:var(--good)">{{ fmt_money(summary.savings) }}</b></span>
+</div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Choosing a winner fills that line's price with their bid.
+document.addEventListener("change", function (e) {
+  var radio = e.target;
+  if (!radio.matches || !radio.matches("input[type=radio][data-line]")) return;
+  var box = document.getElementById("price_" + radio.dataset.line);
+  if (box && radio.dataset.price) box.value = radio.dataset.price;
+  document.querySelectorAll('input[name="' + radio.name + '"]').forEach(function (r) {
+    var row = r.closest("tr");
+    if (row) row.classList.toggle("is-best", r.checked && !!r.value);
+    var label = r.parentNode.querySelector(".t");
+    if (label) label.textContent = r.checked ? (r.value ? "Winner" : "Skipped")
+                                             : (r.value ? "Pick" : "Skip");
+  });
+});
+
+// Quick fill: "" means each line keeps its own L1.
+function awardAll(vendorId) {
+  var lines = {};
+  document.querySelectorAll("input[type=radio][data-line]").forEach(function (r) {
+    (lines[r.dataset.line] = lines[r.dataset.line] || []).push(r);
+  });
+  Object.keys(lines).forEach(function (lineId) {
+    var options = lines[lineId];
+    // "Every item to its own L1" means the bidder who is L1 on the basis the
+    // award is DECIDED on, which is marked with data-l1. It used to take the
+    // first radio in document order - and the bid-only view re-orders the
+    // rows, so the same button quietly picked a different, dearer supplier
+    // depending on which view the buyer happened to be looking at.
+    var target = vendorId
+      ? options.filter(function (r) { return r.value === vendorId; })[0]
+      : (options.filter(function (r) { return r.dataset.l1 === "1"; })[0]
+         || options.filter(function (r) { return r.value; })[0]);
+    // The handler above is delegated from `document`, so this event has to
+    // bubble. Without `bubbles: true` the handler never ran: the winner radio
+    // moved but the price box kept the previous bidder's price, and the award
+    // was booked - and emailed - at a figure the winner never offered.
+    if (target) {
+      target.checked = true;
+      target.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+  toast(vendorId ? "Every item with a bid from that supplier is now theirs."
+                 : "Every item is back with its lowest bidder.");
+}
+window.awardAll = awardAll;
+</script>
+{% endblock %}
