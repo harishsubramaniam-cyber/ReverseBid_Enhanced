@@ -12,7 +12,8 @@
     {% for tax in taxes %}
     <div class="tax-row">
       <input type="text" name="tax_name{{ suffix }}" maxlength="60" value="{{ tax.name }}"
-             placeholder="GST" aria-label="Tax name">
+             list="tax-names" autocomplete="off" spellcheck="false"
+             placeholder="Name of the tax — GST" aria-label="Tax name">
       <input type="number" name="tax_percent{{ suffix }}" step="0.01" min="0" max="100"
              value="{{ '%g'|format(tax.percent) }}" placeholder="18"
              aria-label="Rate, per cent">
@@ -22,8 +23,9 @@
     </div>
     {% endfor %}
     <div class="tax-row">
-      <input type="text" name="tax_name{{ suffix }}" maxlength="60" placeholder="GST"
-             aria-label="Tax name">
+      <input type="text" name="tax_name{{ suffix }}" maxlength="60"
+             list="tax-names" autocomplete="off" spellcheck="false"
+             placeholder="Name of the tax — GST" aria-label="Tax name">
       <input type="number" name="tax_percent{{ suffix }}" step="0.01" min="0" max="100"
              placeholder="18" aria-label="Rate, per cent">
       <span class="pct">%</span>

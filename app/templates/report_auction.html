@@ -37,7 +37,7 @@
         <td class="num mono"><b>{{ fmt_money(entry.lowest.unit_price) if entry.lowest else '—' }}</b></td>
         <td class="num mono" style="color:var(--good)">{{ fmt_money(entry.result.savings) }}</td>
         <td class="small muted">{{ entry.result.basis }}</td>
-        <td class="small">{% for award in entry.awards %}{{ award.vendor.name }}
+        <td class="small">{% for award in entry.awards %}{{ display_name(award.vendor) }}
           ({{ fmt_qty(award.qty) }} @ {{ fmt_money(award.unit_price) }})
           {%- if award.notes %}<div class="muted tiny">{{ award.notes }}</div>{% endif %}
           {%- if not loop.last %}<br>{% endif %}
@@ -53,7 +53,7 @@
       <th class="num">Line total</th><th>Status</th></tr></thead><tbody>
     {% for entry in data.lines %}{% for bid in entry.history|sort(attribute='created_at') %}
       <tr><td class="small">{{ fmt_dt(bid.created_at, False) }}</td>
-        <td>{{ entry.label }}</td><td>{{ bid.vendor.name }}</td>
+        <td>{{ entry.label }}</td><td>{{ display_name(bid.vendor) }}</td>
         <td class="num mono">{{ fmt_money(bid.unit_price) }}</td>
         <td class="num mono">{{ fmt_money(bid.total) }}</td>
         {# "live" beside every bid on a finished auction reads as though the
