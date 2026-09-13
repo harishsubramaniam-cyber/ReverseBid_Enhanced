@@ -16,50 +16,83 @@ buyer does not know what a supplier's freight is — the supplier does. And
 "freight per pen" is a number nobody has: freight is quoted for the
 consignment.
 
-## How it works now
+## A bid is the whole offer, sent in one go
 
 Tick **Compare on the delivered price** when you create the auction. That is
-the buyer's only decision. From then on:
+the buyer's only decision.
 
-**Each bidder gives three figures, once, for the whole auction** — Freight,
-Packaging, and Other costs, with a box to say what "other" means. Not per
-item, not per unit. They can change them at any time while the auction is
-open; their prices are recalculated straight away.
+From then on a bid is never a bare price. One form collects, together:
 
-**Each bidder declares the taxes on each item**, as many as apply, each as a
-percentage with a name — GST, cess, a state levy. They type the rate; the
-amount is worked out and shown beside it as they type. They never type an
-amount, so the money can never disagree with the rate.
+- **the price**,
+- **what it costs to deliver** — Freight, Packaging and Other costs, with a
+  box to say what "other" means, and
+- **the taxes** — as many as apply, each a named rate: GST, cess, a state
+  levy.
 
-**The board ranks everyone on the all-in price**: the bid, plus that item's
-share of their delivery costs, plus their tax.
+All of it goes in with one button. There is no way to leave the taxes for
+later and no way to bid on the goods alone, because half an offer is not an
+offer: the buyer cannot pay it and the board cannot rank it. **Taxes are
+compulsory** on a delivered-price auction — a bid arrives without them is
+turned away with a plain reason. A rate of nothing is a perfectly good
+answer, but it has to be typed: `0` means "no tax on this", an empty box
+means "I have not said", and those are different things.
+
+Rates only, never amounts. The amount is worked out and shown beside the box
+as it is typed, so the money can never disagree with the rate, and a running
+**all-in** figure under the form shows exactly what the bid will come to
+before it is sent — with a warning in the same place if it is already above
+what the buyer will pay.
+
+## The form follows how the auction will be handed out
+
+The bidder is asked for what they are actually competing for, which depends on
+the buyer's **How the business is handed out** setting:
+
+**Item by item** — every item goes to whoever was best on it, so **each item
+is bid for on its own**: its price, its own freight, packaging and other
+costs, and its own taxes. The delivery costs belong to that one item, and the
+button says so by name — *Place bid for Ball pen, blue* — so nobody can send a
+bid thinking it covered the lot.
+
+**All of it to one supplier** — one order, one delivery, one invoice, so **the
+auction is bid for as one lot**. A single form lists every item with a price
+box against each, the delivery costs are asked for **once, for the whole
+consignment**, and the button sends the lot together. The ranking is on the
+**grand total, all in**. Every item has to be priced: a basket with a hole in
+it cannot win an auction that is awarded whole, so the form says which item is
+missing rather than taking a bid that could never be accepted.
+
+The two are not a display choice. On an item-by-item auction the freight boxes
+sit inside each item's own form; on a whole-auction one there is a single set
+of them at the top of the page, and no per-item bid button at all.
 
 ## The arithmetic, in full
 
 For one bidder on one item:
 
 ```
-share of delivery = their whole-auction costs × (this item's value ÷ all items' value)
-delivered         = bid × quantity + share of delivery
-tax               = delivered × (the rates they declared, added up)
-all-in            = delivered + tax
+delivered = bid × quantity + delivery costs for that item
+tax       = delivered × (the rates they declared, added up)
+all-in    = delivered + tax
 ```
 
-Three points worth being explicit about, because each was a choice:
+Where "delivery costs for that item" comes from depends on the auction:
 
-**An item's value is the buyer's own ceiling** (quantity × starting price),
-not the current bid. The ceiling does not move while the auction runs, so a
-bidder's share does not lurch about as prices fall, and the price the screen
-offers is the price the engine accepts.
+- **Item by item** — the freight, packaging and other costs quoted on that
+  item's own bid. No sharing, no arithmetic: what they typed is what that
+  item carries.
+- **All to one supplier** — the one set of costs quoted for the consignment,
+  shared across the items by value: `costs × (this item's value ÷ all items'
+  value)`. The bidder never sees the split as a decision of theirs; it exists
+  only so each line shows a sensible figure and the ceiling can be checked
+  item by item.
 
-**Every item takes a share, whether or not this bidder has priced it.** The
-alternative — sharing only across items they had already priced — meant the
-first bid carried the whole freight bill, so the same bidder could be refused
-on a small item and accepted on a large one depending only on which they typed
-first. Nobody could be told why. The cost is that a bidder who quotes part of
-the auction carries only that part's share of their own costs, which is
-defensible: a part load is a smaller delivery, and the overall standing already
-says plainly when a basket is incomplete.
+Two points worth being explicit about, because each was a choice:
+
+**An item's value, for that share, is the buyer's own ceiling** (quantity ×
+starting price), not the current bid. The ceiling does not move while the
+auction runs, so a bidder's share does not lurch about as prices fall, and
+the price the screen offers is the price the engine accepts.
 
 **Tax goes on last, on the delivered value** — the goods *and* the freight —
 because that is what a tax is charged on. Applying it to the bid alone
@@ -70,48 +103,80 @@ understated every taxed bid by the tax on its own delivery.
 The most the buyer will pay **all-in**, per unit. A bid whose all-in price is
 above it is refused, and the bidder is shown the exact price to type instead.
 
-Because the costs and the taxes are declared separately from the bid, they are
-checked against the ceiling too: a tax added *after* a bid was accepted, that
-would push it above the ceiling, is refused with the arithmetic spelled out.
-Declare your costs and taxes first, then bid — the screen is laid out in that
-order for exactly this reason.
+Because the costs and the taxes arrive with the bid, they are weighed with it:
+the refusal is worked out on the whole offer, not on the price alone. When a
+bidder's own freight and tax come to more than the price to beat before they
+have quoted a thing, the refusal says exactly that — it is the costs that
+would have to change, not the price — rather than sending them off to try a
+smaller number that could never have worked.
+
+## Your bid record, and taking one back
+
+Every submission is kept exactly as it was sent. **Your bids on this auction**
+lists them newest first with each item's price, each tax by name and rate, the
+delivery costs, the totals, and **the moment the bid went in**. Nothing is
+recalculated — these are the figures that were on the screen when the button
+was pressed, which is what a bidder needs when they are asked to stand behind
+one of them.
+
+Each is marked *Standing bid*, *Replaced by a later bid* or *Withdrawn*, so
+which one is in force is never a question.
+
+**A bidder can take back their most recent bid, and only that one.** The bid
+underneath it — whatever they offered before — stands again, at the figures
+they sent it with, and their rank goes back to what that bid earns. Earlier
+bids cannot be picked out and removed: an offer that has already been beaten
+or bettered is part of the record, and a bidder who could quietly unpick it
+could walk their own price back up. If one of them really was a mistake, the
+buyer can strike out any bid at all — that power stays with the buyer, and the
+bidder is told when it is used.
 
 ## What each side sees
 
-**The bidder** sees their bid, the item's share of their delivery costs, each
-tax by name, and the all-in total — and nothing at all about any other bidder's
-costs.
+**The bidder** sees their bid, that item's delivery costs, each tax by name,
+the all-in total, and their own full bid history — and nothing at all about
+any other bidder's costs.
 
-**The buyer** sees, for every bid: the headline price, the delivery share, the
-tax with its rates, and the all-in price the ranking used. The invited-bidder
-list says what each supplier has quoted for delivery, and flags anybody who has
-not filled it in.
+**The buyer** sees, for every bid: the headline price, the delivery, the tax
+with its rates, and the all-in price the ranking used. On a whole-auction
+auction they also see each bidder's grand total, and who has not yet priced
+everything.
 
 ## Trying it
 
-The sample data includes **RA-0004, "Lubricants and rope — delivered price,
-one supplier"**. On the lubricants, the bidder with the *lower* headline price
-loses on the all-in price, because their freight is twice as much:
+The sample data has one of each.
 
-| Bidder | Bid | Delivery quoted | Tax | All-in per unit |
+**RA-0004, "Lubricants and rope — delivered price, one supplier"** is bid for
+as a whole. On the lubricants, the bidder with the *lower* headline price
+loses on the all-in price, because their freight is more than twice as much:
+
+| Bidder | Bid | Delivery quoted for the lot | Tax | All-in per unit |
 | --- | --- | --- | --- | --- |
-| Alpha Supplies | ₹300.00 | ₹6,900 | GST 18% | **₹363.05** |
-| Bharat Traders | ₹306.00 | ₹14,000 | GST 18% | ₹379.44 |
+| Alpha Supplies | ₹300.00 | ₹6,900 | GST 18% | **₹361.38** |
+| Bharat Traders | ₹306.00 | ₹14,000 | GST 18% | ₹376.06 |
 
-It is also set to go to a **single supplier**, so its award screen prices that
-decision: splitting it would save about **₹1,113** (0.28%) against the cheapest
-single supplier. Whether that is worth two orders instead of one is the buyer's
-call — which is the point of showing it.
+and the whole-auction standing, which is what the award is decided on:
+
+| | Alpha Supplies | Bharat Traders |
+| --- | --- | --- |
+| Everything, all in | **₹4,02,852.09** | ₹4,14,947.04 |
+
+**RA-0005, "Bearings — delivered price, item by item"** is the other shape:
+each item carries its own freight, and the same two bidders change places
+between the two items because of it.
 
 Sign in as `supplier1@example.com` / `demo1234` to see the bidder's side, and
 as `buyer@example.com` / `demo1234` to see the board.
 
 ## Where the code is
 
-`app/landed.py` holds all of it — the sharing, the taxes, and the rule that
-keeps a bidder's stored prices in step when anything of theirs changes. The
-engine still ranks on one number per bid, which is why the decrement rules, the
-ceiling check and the award all went on working untouched.
+`app/quotes.py` holds a submission — the whole-auction form, the standings on
+the grand total, taking back the last bid and putting the one before it back,
+and the bidder's history. `app/landed.py` holds the money: the per-item costs,
+the sharing used on a whole-auction bid, and the rule that keeps a bidder's
+stored prices in step when anything of theirs changes. The engine still ranks
+on one number per bid, which is why the decrement rules, the ceiling check and
+the award all went on working untouched.
 `tests/test_enhanced.py` checks every figure on this page against arithmetic
 done by hand.
 
@@ -148,7 +213,10 @@ you compare two identical numbers.
 **Only a bidder who priced every item can be given the whole auction.** A
 basket with a hole in it is not an offer for the auction, however good the
 prices in it are, and the table says so against those bidders instead of
-quietly ranking them as cheapest.
+quietly ranking them as cheapest. On an auction that was set to one supplier
+from the start this can never arise — the bid form there will not send an
+incomplete lot — but on an item-by-item auction, where bidders quote whatever
+suits them, it often does, and the comparison has to be honest about it.
 
 If you chose **all to one supplier**, an award that splits the items is refused
 — naming the suppliers it was split between, and telling you that changing the

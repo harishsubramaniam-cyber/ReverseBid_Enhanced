@@ -1,1 +1,18 @@
-2026-09-13 — Enhanced: deep check complete (rounds 1-6)
+2026-09-13 — Enhanced: bidding reworked so a bid is the whole offer
+
+A bid now carries the price, the delivery costs and the taxes together, and
+the form follows how the auction will be handed out:
+
+  * price + freight/packaging/other + taxes, submitted as one bid; taxes are
+    compulsory on a delivered-price auction (0% allowed, but it must be typed)
+  * awarded to one supplier  -> the whole auction is bid for as one lot, costs
+    quoted once for the consignment, ranked on the grand total
+  * awarded item by item     -> each item bid for on its own, with its own
+    costs and taxes, and the button names the item
+  * a bidder can take back only their most recent bid; the one before it
+    stands again. The buyer keeps the power to strike out any bid.
+  * "Your bids on this auction": every submission kept verbatim, with the
+    prices and tax rates as typed and the exact time each went in
+
+Preceded by the six-round deep check (rounds 1-6), which found and fixed
+seven real defects and left roughly 1,300 permanent checks behind it.

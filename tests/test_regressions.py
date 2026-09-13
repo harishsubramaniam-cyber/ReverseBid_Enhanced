@@ -110,10 +110,19 @@ def make_auction(db, buyer, vendors, item, unit, *, status=AuctionStatus.LIVE, c
     return a
 
 
-def bid_as(client, auction, line, price):
-    return client.post(f"/auctions/{auction.id}/bid",
-                       data={"line_id": str(line.id), "unit_price": str(price)},
-                       follow_redirects=False)
+def bid_as(client, auction, line, price, freight=None, tax=None):
+    """Place one bid through the screen the way a bidder does.
+
+    A bid carries its own delivery costs and its own taxes now, so on an
+    auction compared on the delivered price this helper sends them too. The
+    defaults come from whatever the test put on the bidder's seat, so the
+    older sections read the same as they always did.
+    """
+    data = {"line_id": str(line.id), "unit_price": str(price)}
+    if auction.compare_landed:
+        data.update({"freight": str(freight or 0), "packaging": "0", "other": "",
+                     "tax_name": "GST", "tax_percent": str(tax if tax is not None else 0)})
+    return client.post(f"/auctions/{auction.id}/bid", data=data, follow_redirects=False)
 
 
 def main() -> int:                                                       # noqa: C901
@@ -174,30 +183,51 @@ def main() -> int:                                                       # noqa:
           and "as far as it can" in told(r), told(r)[:46])
 
     # ------------------------------------------------------------------ 3
-    print("\n3. Withdrawing a bid does not let a bidder raise their price")
+    print("\n3. Taking back the last bid puts the one before it back in force")
     wd = make_auction(db, buyer, vendors, item, unit, ceiling=100.0, min_dec=1.0,
                       title="Withdraw and raise")
     wd_line = wd.lines[0]
     bid_as(v1, wd, wd_line, 100)
+    bid_as(v2, wd, wd_line, 60)
     bid_as(v2, wd, wd_line, 50)
-    mine = engine.vendor_best(db, wd_line.id, vendors[1].id)
-    v2.post(f"/auctions/{wd.id}/bids/{mine.id}/withdraw", data={"reason": "oops"},
-            follow_redirects=False)
+    r = v2.post(f"/auctions/{wd.id}/withdraw-last", data={"reason": "typed it wrong"},
+                follow_redirects=False)
+    db.expire_all()
+    check("a bidder can take back the bid they just placed", "taken back" in told(r),
+          told(r)[:60])
+    check("...and the bid before it stands again",
+          engine.best_bid(db, wd_line.id).unit_price == 60.0,
+          engine.best_bid(db, wd_line.id).unit_price)
+    check("...the app says which bid that is", "60" in told(r), told(r)[:90])
     r = bid_as(v2, wd, wd_line, 99)
     db.expire_all()
-    check("re-bidding above a withdrawn bid of their own is refused",
-          engine.best_bid(db, wd_line.id).unit_price == 100.0 and "withdrew" in told(r),
-          told(r)[:60])
-    r = bid_as(v2, wd, wd_line, 49)
-    check("...but a genuinely lower bid is still accepted",
-          engine.best_bid(db, wd_line.id).unit_price == 49.0, told(r)[:50])
+    check("a new bid still has to beat the one that stands again",
+          engine.best_bid(db, wd_line.id).unit_price == 60.0 and "Too high" in told(r),
+          told(r)[:70])
+    r = bid_as(v2, wd, wd_line, 55)
+    check("...and one that does is accepted, even though it is above what they took back",
+          engine.best_bid(db, wd_line.id).unit_price == 55.0, told(r)[:60])
 
     # ------------------------------------------------------------------ 4
-    print("\n4. A withdrawn bid cannot be withdrawn twice")
-    again = v2.post(f"/auctions/{wd.id}/bids/{mine.id}/withdraw", data={"reason": "again"},
+    print("\n4. Only the most recent bid can be taken back")
+    older = (db.query(Bid).filter(Bid.line_id == wd_line.id,
+                                  Bid.vendor_id == vendors[1].id,
+                                  Bid.unit_price == 60.0).first())
+    again = v2.post(f"/auctions/{wd.id}/bids/{older.id}/withdraw", data={"reason": "this one"},
                     follow_redirects=False)
-    check("the second withdrawal is refused", "already been withdrawn" in told(again),
-          told(again)[:46])
+    db.expire_all()
+    check("an earlier bid of their own is not theirs to pull out",
+          "most recent" in told(again) and not db.get(Bid, older.id).withdrawn,
+          told(again)[:60])
+    check("...and the board is unchanged",
+          engine.best_bid(db, wd_line.id).unit_price == 55.0)
+    # The buyer keeps the power to strike out any bid at all.
+    struck = engine.vendor_best(db, wd_line.id, vendors[1].id)
+    r = b.post(f"/auctions/{wd.id}/bids/{struck.id}/withdraw", data={"reason": "buyer"},
+               follow_redirects=False)
+    db.expire_all()
+    check("the buyer can still strike out any bid", db.get(Bid, struck.id).withdrawn,
+          told(r)[:50])
 
     # ------------------------------------------------------------------ 5
     print("\n5. A percentage decrement that rounds to nothing still bites")
@@ -727,10 +757,13 @@ def main() -> int:                                                       # noqa:
     for price in (99, 98, 97):
         bid_as(v1, order, order_line, price)
     page = v1.get(f"/auctions/{order.id}").text
-    mine = page.split("Your bids on this item")[1]
+    mine = page.split("Your bids on this auction")[1]
     check("the bid they just placed is at the top of their own list",
           mine.index("97.00") < mine.index("99.00"),
           f"97 at {mine.index('97.00')}, 99 at {mine.index('99.00')}")
+    check("...and only the newest one can be taken back",
+          mine.count("Take back my last bid") == 1,
+          mine.count("Take back my last bid"))
 
     # ------------------------------------------------------------------ 33
     print("\n33. A price a bidder's own freight has used up is explained as such")
@@ -738,20 +771,16 @@ def main() -> int:                                                       # noqa:
     landed = make_auction(db, buyer, vendors, item, unit, ceiling=12.50, min_dec=0.10,
                           title="Freight eats the ceiling")
     landed.compare_landed = True
-    part = db.query(Part).filter_by(auction_id=landed.id, vendor_id=vendors[0].id).first()
-    # The bidder quotes 130 to deliver 10 units - 13 a unit, more than the
-    # whole starting price on its own.
-    part.bidder_freight = 130.0
-    part.charges_updated_at = datetime.utcnow()
     db.commit()
-    board = " ".join(v1.get(f"/auctions/{landed.id}").text.split())
-    check("the board blames their delivered costs, not the bidding",
-          "use up the whole starting price" in board and "no price you could offer" in board)
-    check("...and does not claim there is a lowest bid when there is none",
-          "the lowest bid is" not in board.split("range-note")[1][:600])
-    refused = told(bid_as(v1, landed, landed.lines[0], 1.0))
-    check("...and the same reason comes back if they try anyway",
-          "use up the whole" in refused, " ".join(refused.split())[:80])
+    # The bidder quotes 130 to deliver 10 units - 13 a unit, more than the
+    # whole starting price on its own. It arrives with the bid, so the refusal
+    # has to explain it there and then.
+    refused = told(bid_as(v1, landed, landed.lines[0], 1.0, freight=130.0))
+    check("the refusal blames their delivered costs, not the bidding",
+          "use up the whole" in refused or "above the starting price" in refused,
+          " ".join(refused.split())[:90])
+    check("...and no bid was booked",
+          engine.best_bid(db, landed.lines[0].id) is None)
 
     # ------------------------------------------------------------------ 34
     print("\n34. A live auction's clock can be moved later, never earlier")
@@ -990,13 +1019,11 @@ def main() -> int:                                                       # noqa:
     lline = landed_auction.lines[0]
     # 90 headline plus 20% tax -> 108 delivered; 100 headline plus 100 of
     # freight across 100 units -> 101 delivered.
-    db.add(LineTax(auction_id=landed_auction.id, line_id=lline.id,
-                   vendor_id=parts[0].vendor_id, name="GST", percent=20.0))
-    parts[1].bidder_freight = 100.0
-    parts[1].charges_updated_at = datetime.utcnow()
     db.commit()
-    bid_as(v1, landed_auction, lline, 90)
-    bid_as(v2, landed_auction, lline, 100)
+    # Each bidder quotes their own costs on their own bid: one charges 20% tax
+    # on a headline of 90, the other 100 of freight on a headline of 100.
+    bid_as(v1, landed_auction, lline, 90, tax=20)
+    bid_as(v2, landed_auction, lline, 100, freight=100)
     db.expire_all()
     ranked = engine.best_per_vendor(db, lline.id)
     check("the cheaper delivered price ranks first",
@@ -1035,20 +1062,18 @@ def main() -> int:                                                       # noqa:
                        ceiling=200.0, min_dec=1.0, max_dec=10.0)
     cap.compare_landed = True
     cline = cap.lines[0]
-    db.add(LineTax(auction_id=cap.id, line_id=cline.id, vendor_id=vendors[0].id,
-                   name="GST", percent=10.0))
     db.commit()
     # 172.72 would deliver at 189.99 - a paisa past the cap, which is exactly
-    # what the old flooring allowed. The engine now asks for 172.73.
-    refused = bid_as(v1, cap, cline, 172.72)
+    # what the old flooring allowed. The engine now asks for 172.73. The 10%
+    # is declared on the bid, as every tax now is.
+    refused = bid_as(v1, cap, cline, 172.72, tax=10)
     db.expire_all()
     check("a price a paisa past the cap is refused", engine.best_bid(db, cline.id) is None,
           told(refused)[:70] if engine.best_bid(db, cline.id) is None else "it was accepted")
-    bid_as(v1, cap, cline, 172.73)                 # delivered 190.00
+    bid_as(v1, cap, cline, 172.73, tax=10)         # delivered 190.00
     db.expire_all()
     before = engine.compare_price(engine.best_bid(db, cline.id))
-    # The window this particular bidder is shown, adders and all.
-    window = engine.bid_window(db, cap, cline, vendors[1].id)
+    # The window the *other* bidder is shown, with the same 10% on top.
     db.add(LineTax(auction_id=cap.id, line_id=cline.id, vendor_id=vendors[1].id,
                    name="GST", percent=10.0))
     db.commit()
@@ -1062,7 +1087,7 @@ def main() -> int:                                                       # noqa:
           f"offers {window.min_allowed} = delivered {floor_price:.2f}, floor {cap_floor:.2f}")
     check("...and is not needlessly more than a paisa above it",
           floor_price - cap_floor < 0.011, f"{floor_price - cap_floor:.4f} above")
-    r = bid_as(v2, cap, cline, window.min_allowed)
+    r = bid_as(v2, cap, cline, window.min_allowed, tax=10)
     db.expire_all()
     best = engine.best_bid(db, cline.id)
     after = engine.compare_price(best)
@@ -1072,7 +1097,7 @@ def main() -> int:                                                       # noqa:
           before - after <= cap.max_decrement + 0.0001,
           f"dropped {before - after:.2f} against a cap of {cap.max_decrement:.2f}")
     # And a paisa below the floor is still refused.
-    r = bid_as(v1, cap, cline, round(window.min_allowed - 0.01, 2))
+    r = bid_as(v1, cap, cline, round(window.min_allowed - 0.01, 2), tax=10)
     db.expire_all()
     check("a paisa below the floor is refused", engine.best_bid(db, cline.id).id == best.id,
           told(r)[:60])

@@ -1,3 +1,10 @@
+"""Placing a bid, and taking one back.
+
+A bid is everything that makes up the offer, submitted at once: the price, what
+it costs to deliver, and the tax charged on it. The shape of the form follows
+how the buyer said the auction would be handed out - one item at a time, or
+the whole thing in one go - because that is what the bidder is competing for.
+"""
 from __future__ import annotations
 
 import math
@@ -5,7 +12,7 @@ import math
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from .. import landed
+from .. import landed, quotes
 from ..db import get_db
 from ..engine import BidError, line_label, place_bid, withdraw_bid
 from ..models import Auction, AuctionLine, AuctionStatus, Bid, User
@@ -28,161 +35,209 @@ def _row_id(raw: str) -> int | None:
     return value if 0 < value < 2 ** 62 else None
 
 
+class Typed(ValueError):
+    """Something in the form is not a number anybody could use."""
+
+
+def _money(raw: str, what: str) -> float:
+    """A money box as typed. Blank is nothing; anything unreadable is refused."""
+    raw = (raw or "").strip()
+    if not raw:
+        return 0.0
+    if "," in raw:
+        # Half the world writes 12,50 for twelve and a half and the other half
+        # writes 1,250 for one thousand two hundred and fifty. Quietly dropping
+        # the comma reads the first as 1250, so the box takes neither.
+        raise Typed(f"{what} — type it without commas: 1250.50, not 1,250.50.")
+    try:
+        value = float(raw)
+    except ValueError:
+        raise Typed(f"{what} — “{raw[:20]}” is not an amount. Digits only, like 12000.")
+    if not math.isfinite(value) or value < 0:
+        raise Typed(f"{what} cannot be less than zero.")
+    if value > 1e12:
+        raise Typed(f"{what} is too large to be real. Check for an extra digit.")
+    return round(value, 2)
+
+
+def _charges(form, auction: Auction) -> landed.Charges:
+    """The delivery costs on this form — for one item, or for the consignment."""
+    if not auction.compare_landed:
+        return landed.Charges()
+    return landed.Charges(
+        freight=_money(form.get("freight"), "Freight"),
+        packaging=_money(form.get("packaging"), "Packaging"),
+        other=_money(form.get("other"), "Other costs"),
+        other_label=(form.get("other_label") or "").strip()[:60],
+        declared=True)
+
+
+def _taxes(names: list[str], percents: list[str], where: str) -> list[quotes.TaxRow]:
+    """The taxes on one item, as typed. A rate of zero counts; a blank box does not."""
+    rows: list[quotes.TaxRow] = []
+    for name, percent in zip(names, percents):
+        raw = (percent or "").strip().replace("%", "")
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            raise Typed(f"{where}: “{raw[:20]}” is not a percentage. Type the rate as a "
+                        "number — 18 for 18%.")
+        if not math.isfinite(value) or value < 0:
+            raise Typed(f"{where}: a tax rate cannot be less than zero.")
+        if value > 100:
+            raise Typed(f"{where}: {value:g}% is not a rate anybody charges. Percentages "
+                        "only — 18 for 18%, not the amount.")
+        rows.append(quotes.TaxRow(name=(name or "Tax").strip()[:60] or "Tax",
+                                  percent=round(value, 4)))
+    if rows and sum(row.percent for row in rows) > 100:
+        raise Typed(f"{where}: those taxes add up to more than 100%. Check the rates.")
+    return rows
+
+
 @router.post("/{auction_id}/bid")
-def post_bid(auction_id: int, request: Request, line_id: str = Form(""),
-             unit_price: str = Form(""), note: str = Form(""),
-             user: User = Depends(vendor_only), db: Session = Depends(get_db)):
+async def post_bid(auction_id: int, request: Request, user: User = Depends(vendor_only),
+                   db: Session = Depends(get_db)):
+    """A bid on one item: its price, its delivery costs and its taxes, together."""
+    form = await request.form()
     auction = db.get(Auction, auction_id)
-    # isdigit() is true for characters int() cannot parse ("²") and puts no
-    # bound on the length, so a tampered or stale form turned what should be a
-    # clean 404 into a 500 error page.
-    key = _row_id(line_id)
+    key = _row_id(str(form.get("line_id") or ""))
     line = db.get(AuctionLine, key) if key else None
     if (not auction or auction.org_id != user.org_id
             or not line or line.auction_id != auction.id):
         raise HTTPException(404, "That item is not part of this auction.")
-    if not unit_price.strip():
-        return redirect(f"/auctions/{auction_id}",
-                        "Type a price before pressing Place bid.", kind="error")
+    back = f"/auctions/{auction_id}"
+    if quotes.whole_auction_bidding(auction):
+        return redirect(back, "This auction is awarded to one supplier for everything, so "
+                              "it is bid for as one lot — use the form at the top of the "
+                              "page.", kind="error")
+
+    raw_price = str(form.get("unit_price") or "").strip()
+    if not raw_price:
+        return redirect(back, f"Type a price for {line_label(line)} before pressing "
+                              "Place bid.", kind="error")
     try:
-        price = float(unit_price)
+        price = float(raw_price) if "," not in raw_price else float("nan")
     except ValueError:
         price = float("nan")
     if not math.isfinite(price):
-        return redirect(f"/auctions/{auction_id}",
-                        f"“{unit_price.strip()[:20]}” is not a price. Use digits only, "
-                        "like 970.50.", kind="error")
+        return redirect(back, f"“{raw_price[:20]}” is not a price. Use digits only, "
+                              "like 970.50 — no commas.", kind="error")
     try:
-        bid = place_bid(db, auction, line, user, price, note, ip=client_ip(request))
+        charges = _charges(form, auction)
+        taxes = _taxes(form.getlist("tax_name"), form.getlist("tax_percent"),
+                       line_label(line))
+    except Typed as exc:
+        return redirect(back, str(exc), kind="error")
+
+    try:
+        # Always as a submission, even on an auction with no extras to
+        # collect: it is what the bidder's own record of their bids is built
+        # from, and what "take back my last bid" takes back.
+        place_bid(db, auction, line, user, price, str(form.get("note") or ""),
+                  ip=client_ip(request), charges=charges,
+                  taxes=taxes if auction.compare_landed else [])
     except BidError as exc:
-        return redirect(f"/auctions/{auction_id}", str(exc), kind="error")
+        return redirect(back, str(exc), kind="error")
+
     from ..engine import vendor_rank
     rank = vendor_rank(db, line.id, user.vendor_id)
     if not auction.show_rank:
-        # The buyer turned the standings off; the message that lands a second
-        # after the bid must not be the one place they still appear.
-        good = "Bid placed."
+        good = f"Bid placed on {line_label(line)}."
     elif rank == 1:
-        good = "You are now L1 — the lowest bid."
+        good = f"You are now L1 on {line_label(line)} — the lowest bid."
     else:
-        good = f"Bid placed. You are at L{rank}."
-    return redirect(f"/auctions/{auction_id}", f"{good} We emailed you a confirmation.")
+        good = f"Bid placed on {line_label(line)}. You are at L{rank}."
+    return redirect(back, f"{good} We emailed you a confirmation.")
 
 
-def _money(raw: str) -> float:
-    """A money box as typed. Blank is nothing; anything unreadable is refused."""
-    raw = (raw or "").strip().replace(",", "")
-    if not raw:
-        return 0.0
-    value = float(raw)                       # ValueError handled by the caller
-    if not math.isfinite(value) or value < 0:
-        raise ValueError("negative")
-    if value > 1e12:
-        raise ValueError("absurd")
-    return round(value, 2)
-
-
-@router.post("/{auction_id}/charges")
-def post_charges(auction_id: int, request: Request, freight: str = Form(""),
-                 packaging: str = Form(""), other: str = Form(""),
-                 other_label: str = Form(""), user: User = Depends(vendor_only),
-                 db: Session = Depends(get_db)):
-    """What the bidder says it costs to deliver this auction.
-
-    One figure each for the whole auction, because that is how freight is
-    quoted. They may change it while the auction is live - it is their own
-    number, and their delivered prices are worked out again the moment it
-    changes, so the board never shows a price that is no longer true.
-    """
+@router.post("/{auction_id}/bid-all")
+async def post_basket_bid(auction_id: int, request: Request,
+                          user: User = Depends(vendor_only),
+                          db: Session = Depends(get_db)):
+    """One bid for the whole auction: every item priced on a single form."""
     auction = db.get(Auction, auction_id)
     if not auction or auction.org_id != user.org_id:
         raise HTTPException(404, "That auction does not exist.")
-    if not auction.compare_landed:
-        return redirect(f"/auctions/{auction_id}",
-                        "This auction is decided on the bid price alone, so there is "
-                        "nothing to add here.", kind="error")
-    if auction.status not in (AuctionStatus.LIVE, AuctionStatus.SCHEDULED):
-        return redirect(f"/auctions/{auction_id}",
-                        "This auction is closed, so its costs can no longer be changed.",
-                        kind="error")
-    try:
-        values = {"freight": _money(freight), "packaging": _money(packaging),
-                  "other": _money(other)}
-    except ValueError:
-        return redirect(f"/auctions/{auction_id}",
-                        "Those costs must be plain amounts — digits only, like 12000, "
-                        "and never less than zero.", kind="error")
-    try:
-        saved = landed.save_charges(db, auction, user.vendor_id,
-                                    other_label=other_label, **values)
-    except ValueError as exc:
-        return redirect(f"/auctions/{auction_id}", str(exc), kind="error")
-    if not saved.any:
-        return redirect(f"/auctions/{auction_id}",
-                        "Saved — you are quoting no delivery costs, so your bid price is "
-                        "your delivered price.")
-    return redirect(f"/auctions/{auction_id}",
-                    f"Saved. {saved.describe()} — {fmt_money(saved.total)} in all, shared "
-                    "across every item in the auction by what each is worth. You carry the "
-                    "share of the items you price.")
-
-
-@router.post("/{auction_id}/lines/{line_id}/taxes")
-async def post_taxes(auction_id: int, line_id: int, request: Request,
-                     user: User = Depends(vendor_only), db: Session = Depends(get_db)):
-    """The taxes this bidder charges on one item, as percentages.
-
-    As many as apply, each with a name. The money is never typed - it is
-    worked out from the delivered value of the item, so the two can never
-    disagree.
-    """
-    auction = db.get(Auction, auction_id)
-    line = db.get(AuctionLine, line_id)
-    if (not auction or auction.org_id != user.org_id
-            or not line or line.auction_id != auction.id):
-        raise HTTPException(404, "That item is not part of this auction.")
-    if not auction.compare_landed:
-        return redirect(f"/auctions/{auction_id}",
-                        "This auction is decided on the bid price alone, so taxes are "
-                        "not collected.", kind="error")
-    if auction.status not in (AuctionStatus.LIVE, AuctionStatus.SCHEDULED):
-        return redirect(f"/auctions/{auction_id}",
-                        "This auction is closed, so its taxes can no longer be changed.",
-                        kind="error")
+    back = f"/auctions/{auction_id}"
+    if not quotes.whole_auction_bidding(auction):
+        return redirect(back, "This auction is awarded item by item, so each item is bid "
+                              "for on its own.", kind="error")
     form = await request.form()
-    names = form.getlist("tax_name")
-    percents = form.getlist("tax_percent")
-    rows: list[tuple[str, float]] = []
-    for name, percent in zip(names, percents):
-        percent = (percent or "").strip().replace("%", "")
-        if not percent:
-            continue
-        try:
-            value = float(percent)
-        except ValueError:
-            return redirect(f"/auctions/{auction_id}",
-                            f"“{percent[:20]}” is not a percentage. Type the rate as a "
-                            "number — 18 for 18%.", kind="error")
-        if not math.isfinite(value) or value < 0:
-            return redirect(f"/auctions/{auction_id}",
-                            "A tax rate cannot be less than zero.", kind="error")
-        rows.append((name, value))
+    prices: dict[int, float] = {}
+    taxes: dict[int, list[quotes.TaxRow]] = {}
     try:
-        kept = landed.save_taxes(db, auction, line, user.vendor_id, rows)
-    except ValueError as exc:
+        charges = _charges(form, auction)
+        for line in auction.lines:
+            raw = str(form.get(f"price_{line.id}") or "").strip()
+            if raw:
+                try:
+                    value = float(raw) if "," not in raw else float("nan")
+                    if not math.isfinite(value):
+                        raise ValueError
+                except ValueError:
+                    raise Typed(f"On “{line_label(line)}”, “{raw[:20]}” is not a price. "
+                                "Use digits only, like 970.50 — no commas.")
+                prices[line.id] = value
+            taxes[line.id] = _taxes(form.getlist(f"tax_name_{line.id}"),
+                                    form.getlist(f"tax_percent_{line.id}"),
+                                    line_label(line))
+    except Typed as exc:
+        return redirect(back, str(exc), kind="error")
+
+    try:
+        quote = quotes.place_basket(db, auction, user, prices=prices, charges=charges,
+                                    taxes=taxes, note=str(form.get("note") or ""),
+                                    ip=client_ip(request))
+    except BidError as exc:
+        return redirect(back, str(exc), kind="error")
+
+    ranked = quotes.standings(db, auction)
+    rank = next((row["rank"] for row in ranked if row["vendor_id"] == user.vendor_id), 1)
+    total = fmt_money(quote.total_all_in)
+    if not auction.show_rank:
+        good = f"Bid placed for the whole auction — {total} all in."
+    elif rank == 1:
+        good = f"You are now L1 for the whole auction at {total} all in."
+    else:
+        good = f"Bid placed for the whole auction — {total} all in. You are at L{rank}."
+    return redirect(back, f"{good} We emailed you a confirmation.")
+
+
+@router.post("/{auction_id}/withdraw-last")
+def post_withdraw_last(auction_id: int, request: Request, reason: str = Form(""),
+                       user: User = Depends(vendor_only), db: Session = Depends(get_db)):
+    """A bidder taking back the last bid they placed."""
+    auction = db.get(Auction, auction_id)
+    if not auction or auction.org_id != user.org_id:
+        raise HTTPException(404, "That auction does not exist.")
+    try:
+        quotes.withdraw_latest(db, auction, user, reason, ip=client_ip(request))
+    except BidError as exc:
         return redirect(f"/auctions/{auction_id}", str(exc), kind="error")
-    label = line_label(line)
-    if not kept:
-        return redirect(f"/auctions/{auction_id}",
-                        f"Saved — no taxes on {label}.")
-    listed = ", ".join(f"{row.name} {row.percent:g}%" for row in kept)
-    return redirect(f"/auctions/{auction_id}",
-                    f"Saved for {label}: {listed}. The amounts are worked out for you.")
+    standing = quotes.latest_quote(db, auction, user.vendor_id)
+    if standing is None:
+        message = ("Your last bid has been taken back. You have no bid standing on this "
+                   "auction now.")
+    else:
+        detail = standing.as_detail()
+        when = detail.get("placed_at", "")
+        message = ("Your last bid has been taken back. The bid you placed"
+                   + (f" on {when}" if when else " before it")
+                   + f" — {fmt_money(standing.total_all_in)} all in — stands again.")
+    return redirect(f"/auctions/{auction_id}", message)
 
 
 @router.post("/{auction_id}/bids/{bid_id}/withdraw")
 def post_withdraw(auction_id: int, bid_id: int, request: Request, reason: str = Form(""),
                   user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """The buyer striking one bid out.
+
+    Bidders do not come this way any more: they take back their own last
+    submission, which puts the one before it back in force. This is the
+    buyer's power to strike out any bid at all, and it stays with them.
+    """
     bid = db.get(Bid, bid_id)
     auction = db.get(Auction, auction_id)
     # The organisation check that every other route here does. Without it a
@@ -193,9 +248,27 @@ def post_withdraw(auction_id: int, bid_id: int, request: Request, reason: str = 
     if (not bid or not auction or bid.auction_id != auction_id
             or auction.org_id != user.org_id):
         raise HTTPException(404, "That bid does not exist.")
+    if not user.is_buyer_side:
+        # A bidder reaching this from an older page, or from the item itself:
+        # it only works on the bid they placed last, and it goes through the
+        # same door as the button, so the bid before it stands again.
+        latest = quotes.latest_quote(db, auction, user.vendor_id)
+        if (bid.vendor_id != user.vendor_id or latest is None
+                or bid.quote_id != latest.id):
+            return redirect(f"/auctions/{auction_id}",
+                            "You can only take back your most recent bid. Your earlier "
+                            "bids stand — speak to the buyer if one of them was a "
+                            "mistake.", kind="error")
+        try:
+            quotes.withdraw_latest(db, auction, user, reason, ip=client_ip(request))
+        except BidError as exc:
+            return redirect(f"/auctions/{auction_id}", str(exc), kind="error")
+        return redirect(f"/auctions/{auction_id}",
+                        "Your last bid has been taken back. Whatever you bid before it "
+                        "stands again.")
     try:
         withdraw_bid(db, bid, user, reason, ip=client_ip(request))
     except BidError as exc:
         return redirect(f"/auctions/{auction_id}", str(exc), kind="error")
     return redirect(f"/auctions/{auction_id}",
-                    "Bid withdrawn. Ranks have been recalculated and the buyer told.")
+                    "Bid withdrawn. Ranks have been recalculated and the bidder told.")

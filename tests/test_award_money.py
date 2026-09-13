@@ -150,9 +150,13 @@ def part_one():
         db.refresh(auction)
         return auction
 
-    def bid(client, auction, line, price):
-        return client.post(f"/auctions/{auction.id}/bid",
-                           data={"line_id": str(line.id), "unit_price": str(price)},
+    def bid(client, auction, line, price, freight=0, tax=0):
+        """A bid as the screen sends it: price, delivery costs and tax together."""
+        data = {"line_id": str(line.id), "unit_price": str(price)}
+        if auction.compare_landed:
+            data.update({"freight": str(freight), "packaging": "0", "other": "",
+                         "tax_name": "GST", "tax_percent": str(tax)})
+        return client.post(f"/auctions/{auction.id}/bid", data=data,
                            follow_redirects=False)
 
     def award(auction, picks, prices=None):
@@ -376,9 +380,13 @@ def part_two():
         db.refresh(auction)
         return auction
 
-    def bid(client, auction, line, price):
-        return client.post(f"/auctions/{auction.id}/bid",
-                           data={"line_id": str(line.id), "unit_price": str(price)},
+    def bid(client, auction, line, price, freight=0, tax=0):
+        """A bid as the screen sends it: price, delivery costs and tax together."""
+        data = {"line_id": str(line.id), "unit_price": str(price)}
+        if auction.compare_landed:
+            data.update({"freight": str(freight), "packaging": "0", "other": "",
+                         "tax_name": "GST", "tax_percent": str(tax)})
+        return client.post(f"/auctions/{auction.id}/bid", data=data,
                            follow_redirects=False)
 
     def award(auction, picks, prices=None):
@@ -430,10 +438,10 @@ def part_two():
     check("...and the percentage is zero, not an error", close(summary["savings_pct"], 0))
 
     print("\n13. Savings on a delivered-price auction are the delivered savings")
-    delivered = make([(items[0], 100, 100.0)], tag="landed", landed_on=True,
-                     freight={0: 1000.0})
+    delivered = make([(items[0], 100, 100.0)], tag="landed", landed_on=True)
     line = delivered.lines[0]
-    bid(one, delivered, line, 80.0)          # 80 + 10 of freight = 90 all in
+    # 1,000 to deliver the hundred, quoted on the bid: 80 + 10 = 90 all in.
+    bid(one, delivered, line, 80.0, freight=1000)
     db.expire_all()
     summary = engine.auction_summary(db, delivered)
     check("the spend counts the freight", close(summary["final_value"], 9000, 0.02),

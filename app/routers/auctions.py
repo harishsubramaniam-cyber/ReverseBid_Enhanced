@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from .. import audit, engine, landed, notify
+from .. import audit, engine, landed, notify, quotes
 from ..audit import record
 from ..engine import ADDER_FIELDS
 from ..errors import ActionError, FormError
@@ -878,6 +878,10 @@ def build_detail_context(db: Session, auction: Auction, user: User) -> dict:
             "result": engine.line_result(db, line),
             # --- delivered cost, as the bidder quoted it
             "my_taxes": my_line_taxes,
+            # What this bidder quoted to deliver THIS item, where the auction
+            # is handed out item by item and the costs belong to the line.
+            "my_line_charges": (landed.line_charges(db, line.id, user.vendor_id)
+                                if user.is_vendor else landed.NO_CHARGES),
             "my_quote": (landed.breakdown(db, auction, line, user.vendor_id, mine.unit_price)
                          if (user.is_vendor and mine) else None),
             "quote_for": (lambda ln: lambda vendor_id, price:
@@ -910,6 +914,17 @@ def build_detail_context(db: Session, auction: Auction, user: User) -> dict:
                       .order_by(Bid.created_at.desc()).all() if user.is_vendor else []),
         "seconds_left": max(0, int((auction.end_at - datetime.utcnow()).total_seconds())),
         "AuctionStatus": AuctionStatus,
+        # --- how this auction is bid for: one item at a time, or the whole lot
+        "whole_auction": quotes.whole_auction_bidding(auction),
+        "basket_window": (quotes.basket_window(db, auction, user.vendor_id)
+                          if user.is_vendor else None),
+        "basket_standings": quotes.standings(db, auction),
+        "my_basket": (quotes.standing_quote(db, auction, user.vendor_id)
+                      if user.is_vendor else None),
+        # Every submission this bidder has made, exactly as they made it.
+        "my_history": (quotes.history(db, auction, user.vendor_id)
+                       if user.is_vendor else []),
+        "per_line_costs": landed.per_line_costs(auction),
         # --- delivered cost
         "my_charges": (landed.charges_for(db, auction, user.vendor_id)
                        if user.is_vendor else landed.NO_CHARGES),

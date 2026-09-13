@@ -31,17 +31,12 @@ def check(label, ok, extra=""):
 
 
 def my_bid_count(page) -> int:
-    """How many bids this bidder has in this auction, read off the screen.
+    """How many bids this bidder has placed on this auction, read off the screen.
 
-    Summed across every item, because a bid may land on an item this bidder
-    had not touched before.
+    Every submission appears as a card in "Your bids on this auction", newest
+    first, so counting the cards counts the bids.
     """
-    summary = page.locator("summary:has-text('Your bids on this item')")
-    total = 0
-    for index in range(summary.count()):
-        found = re.search(r"\((\d+)\)", summary.nth(index).inner_text())
-        total += int(found.group(1)) if found else 0
-    return total
+    return page.locator(".bid-record").count()
 
 
 def live_auction_id(page, base) -> int:

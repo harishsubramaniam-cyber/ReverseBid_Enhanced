@@ -1,0 +1,38 @@
+{# The taxes on one item, as part of the bid that carries them.
+
+   ``suffix`` is empty on a single-item form and "_<line id>" on the
+   whole-auction form, where one submission carries an editor per item.
+   ``base`` is the delivered value the amounts are worked out from, so the
+   money appears the instant a rate is typed. #}
+<div class="tax-box" data-tax-line="{{ line.id }}">
+  <label>Tax on this item <span class="req">required</span></label>
+  <p class="hint" style="margin:2px 0 6px">Type the rate — 18 for 18%. The amount is worked
+    out for you. If you charge no tax on this item, type <b>0</b>.</p>
+  <div class="tax-rows" data-base="{{ base or 0 }}" data-currency="{{ currency }}">
+    {% for tax in taxes %}
+    <div class="tax-row">
+      <input type="text" name="tax_name{{ suffix }}" maxlength="60" value="{{ tax.name }}"
+             placeholder="GST" aria-label="Tax name">
+      <input type="number" name="tax_percent{{ suffix }}" step="0.01" min="0" max="100"
+             value="{{ '%g'|format(tax.percent) }}" placeholder="18"
+             aria-label="Rate, per cent">
+      <span class="pct">%</span>
+      <span class="tax-amount muted mono small"></span>
+      <button type="button" class="linkbtn quiet" data-drop-tax>Remove</button>
+    </div>
+    {% endfor %}
+    <div class="tax-row">
+      <input type="text" name="tax_name{{ suffix }}" maxlength="60" placeholder="GST"
+             aria-label="Tax name">
+      <input type="number" name="tax_percent{{ suffix }}" step="0.01" min="0" max="100"
+             placeholder="18" aria-label="Rate, per cent">
+      <span class="pct">%</span>
+      <span class="tax-amount muted mono small"></span>
+      <button type="button" class="linkbtn quiet" data-drop-tax>Remove</button>
+    </div>
+  </div>
+  <div class="btn-row" style="margin-top:6px">
+    <button type="button" class="btn ghost sm" data-add-tax>Add another tax</button>
+    <span class="muted small">Total tax on this item: <b data-tax-total></b></span>
+  </div>
+</div>

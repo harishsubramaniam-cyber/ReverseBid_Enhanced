@@ -443,6 +443,48 @@
       : "";
   });
 
+  // ------------------------------------- what this bid comes to, all in
+  // The price, the delivery costs and the taxes are typed on one form, so the
+  // form can say what they add up to before anything is sent - and whether
+  // that is over the buyer's ceiling. Without it the bidder types three
+  // figures and finds out only when the bid is refused.
+  function allIn(form) {
+    var out = form.querySelector("[data-all-in]");
+    if (!out) return;
+    var price = parseFloat((form.querySelector("input[name=unit_price]") || {}).value);
+    var qty = parseFloat(out.dataset.qty || "0");
+    var ceiling = parseFloat(out.dataset.ceiling || "");
+    var currency = out.dataset.currency || "";
+    if (!isFinite(price) || price <= 0 || qty <= 0) { out.textContent = ""; return; }
+    var costs = 0;
+    ["freight", "packaging", "other"].forEach(function (name) {
+      var box = form.querySelector("input[name=" + name + "]");
+      var value = box ? parseFloat(box.value) : NaN;
+      if (isFinite(value) && value > 0) costs += value;
+    });
+    var rate = 0;
+    form.querySelectorAll("input[name^=tax_percent]").forEach(function (box) {
+      var value = parseFloat(box.value);
+      if (isFinite(value) && value > 0) rate += value;
+    });
+    var unit = (price + costs / qty) * (1 + rate / 100);
+    var text = "All in, that is " + money(unit, currency) + " per unit — " +
+      money(unit * qty, currency) + " for all " + qty.toLocaleString() + ".";
+    if (isFinite(ceiling) && ceiling > 0 && unit > ceiling + 0.0001) {
+      text += " That is above the buyer's starting price of " +
+        money(ceiling, currency) + ", so it would be turned down.";
+      out.classList.add("over");
+    } else {
+      out.classList.remove("over");
+    }
+    out.textContent = text;
+  }
+
+  document.addEventListener("input", function (e) {
+    var form = e.target.closest ? e.target.closest("form") : null;
+    if (form && form.querySelector("[data-all-in]")) allIn(form);
+  });
+
   // ------------------------------------------------ taxes, worked out as typed
   // The bidder types a rate; the money is never typed. Showing the amount the
   // instant the rate is entered is what stops "18" being mistaken for rupees.
@@ -460,7 +502,9 @@
     var base = taxBase(rows), currency = rows.dataset.currency || "";
     var total = 0;
     rows.querySelectorAll(".tax-row").forEach(function (row) {
-      var pct = parseFloat((row.querySelector("input[name=tax_percent]") || {}).value);
+      // Names carry the item id on a whole-auction form (tax_percent_12), so
+      // match on the prefix rather than the exact name.
+      var pct = parseFloat((row.querySelector("input[name^=tax_percent]") || {}).value);
       var out = row.querySelector(".tax-amount");
       if (!out) return;
       if (!isFinite(pct) || pct <= 0) { out.textContent = ""; return; }
@@ -481,14 +525,17 @@
   document.addEventListener("click", function (e) {
     var add = e.target.closest ? e.target.closest("[data-add-tax]") : null;
     if (add) {
-      var rows = add.closest("form").querySelector(".tax-rows");
+      // One form can hold a tax editor per item, so take the one this button
+      // belongs to - not the first on the page.
+      var scope = add.closest(".tax-box") || add.closest("form");
+      var rows = scope.querySelector(".tax-rows");
       var last = rows.querySelector(".tax-row:last-child");
       var copy = last.cloneNode(true);
       copy.querySelectorAll("input").forEach(function (input) { input.value = ""; });
       var out = copy.querySelector(".tax-amount");
       if (out) out.textContent = "";
       rows.appendChild(copy);
-      var name = copy.querySelector("input[name=tax_name]");
+      var name = copy.querySelector("input[name^=tax_name]");
       if (name) name.focus();
       return;
     }

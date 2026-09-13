@@ -6,11 +6,19 @@ whole cycle — onboarding, masters, auction creation, the live bidding engine, 
 reporting, and an email on every key event.
 
 **What is enhanced.** Auctions can be decided on the **delivered price**, and the numbers come
-from the people who actually know them. Each bidder quotes their own **freight, packaging and
-other costs** — one figure each for the whole auction, the way a supplier really quotes them —
-and declares the **taxes on each item** as percentages, with the amounts worked out for them.
-The board then ranks everyone on what the buyer would truly pay: the bid, plus that item's
-share of the delivery, plus tax. The buyer never has to guess a supplier's freight again.
+from the people who actually know them. A bid is the **whole offer, sent in one go**: the
+price, the **freight, packaging and other costs**, and the **taxes** as named percentages with
+the amounts worked out for them. There is no bidding on the goods alone, and no leaving the tax
+until later — a delivered-price auction will not take a bid without it. The board then ranks
+everyone on what the buyer would truly pay: the bid, plus delivery, plus tax. The buyer never
+has to guess a supplier's freight again.
+The form follows how the auction will be handed out. **Item by item** means each item is bid
+for on its own, with its own delivery costs and taxes, and the button names the item. **All to
+one supplier** means the auction is bid for as one lot: every item priced on one form, delivery
+quoted once for the consignment, and the ranking on the grand total.
+Bidders can **take back their most recent bid** — only that one — and whatever they bid before
+it stands again; and they can see **every bid they have placed**, with the prices and tax rates
+exactly as they typed them and the moment each one went in.
 Before awarding, the buyer can switch the whole screen between **the quotes as the suppliers
 wrote them** and **what those quotes really cost delivered and taxed** — the two often disagree
 about who is winning, which is exactly why both are shown.
@@ -58,16 +66,27 @@ Sample sign-ins (after `python seed.py`), password `demo1234`:
 
 **2 — Comparing like with like**
 
-* **Delivered-cost comparison**, per auction. Each invited bidder has their own **freight**,
-  **duty**, **packaging** and one adder you name — as an amount per unit or a percentage of the
-  bid — pre-filled from defaults on their vendor record. Tick *Compare on the delivered price*
-  and the ranking, the decrements, the ceiling and the savings all work on the delivered figure,
-  so the supplier next door and the one three states away are judged fairly.
-* Bidders still type their own ex-works price. Their screen shows their adders, their delivered
-  price, and the exact price to type to take the lead — *"type ₹269.00 — that lands at
+* **Delivered-cost comparison**, per auction. Tick *Compare on the delivered price* and the
+  ranking, the decrements, the ceiling and the savings all work on the all-in figure, so the
+  supplier next door and the one three states away are judged fairly.
+* **The bid carries everything.** One form takes the price, the freight, packaging and other
+  costs, and every tax as a named rate — sent together, checked together. Taxes are compulsory:
+  a rate of `0` is a fine answer, but an empty box is not an answer at all. Amounts are never
+  typed, only rates, so the money can never disagree with the percentage.
+* **Item by item, or the whole lot** — whichever the buyer chose, that is what the bidder is
+  asked for. Per item: its own costs, its own taxes, and a button that names the item. Whole
+  auction: every item priced on one form, costs quoted once for the consignment, ranked on the
+  grand total, and no partial baskets.
+* Bidders still type their own ex-works price. Their screen shows a running all-in total as
+  they type, and the exact price to type to take the lead — *"type ₹269.00 — that lands at
   ₹270.50"*. Each bidder's window is different, which is the point.
-* Every bid keeps the delivered price it was ranked at, and adders can only be changed while
-  the auction is still editable, so no bid is ever re-ranked after the fact.
+* **Take back the last bid, and only the last.** The bid before it stands again, at the figures
+  it was sent with. The buyer keeps the power to strike out any bid at all.
+* **Your bid record**, kept verbatim: every submission, newest first, with each price and tax
+  rate as typed, the delivery costs, the totals, the exact time, and whether it is standing,
+  replaced or withdrawn.
+* Every bid keeps the delivered price it was ranked at, so no bid is ever re-ranked after the
+  fact.
 
 **3 — Documents, both ways**
 
@@ -133,7 +152,8 @@ Sample sign-ins (after `python seed.py`), password `demo1234`:
 * Publish goes straight to the bidders — no approval step. A future auction publishes as
   *scheduled* and can be opened early with **Start bidding now**; if the opening time has already
   passed, publishing opens it immediately.
-* Withdraw a bid, edit an auction before it opens, cancel with a reason at any time. Editing a
+* Bidders take back their most recent bid; buyers strike out any bid. Edit an auction before it
+  opens, cancel with a reason at any time. Editing a
   published auction emails any bidder you add, and tells the rest what changed; cancelling a
   draft nobody was told about emails nobody.
 * **Every failure is explained on the screen it happened on**, in plain words, with what you

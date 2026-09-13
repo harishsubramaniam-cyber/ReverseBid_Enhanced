@@ -21,8 +21,8 @@ import pathlib
 from datetime import datetime, timedelta
 
 from app.db import Base, SessionLocal, engine
-from app.landed import reprice_vendor
-from app.models import (Auction, AuctionLine, AuctionStatus, Award, Bid, DecrementType,
+from app.landed import _share_of, reprice_vendor, snapshot
+from app.models import (Auction, AuctionLine, AuctionStatus, Award, Bid, DecrementType, Quote,
                         Item, LineTax, Message, Organisation, Participant, Role, Unit,
                         User, Vendor)
 from app.security import hash_password
@@ -69,6 +69,9 @@ AUCTIONS = [
     ("Lubricants and rope — delivered price, one supplier", AuctionStatus.LIVE, -1,
      [(4, 900, 340.0), (3, 1500, 46.0)],
      [(1, 0, 306.0), (0, 0, 300.0), (0, 1, 43.0), (1, 1, 41.5)]),
+    ("Bearings — delivered price, item by item", AuctionStatus.LIVE, -1,
+     [(2, 400, 190.0), (0, 2000, 15.0)],
+     [(0, 0, 168.0), (1, 0, 171.0), (1, 1, 13.4), (0, 1, 13.9)]),
     ("Rope and cordage", AuctionStatus.AWARDED, -72,
      [(3, 2500, 42.0)],
      [(0, 0, 40.5), (1, 0, 39.75), (2, 0, 39.0), (1, 0, 38.4)]),
@@ -77,6 +80,57 @@ AUCTIONS = [
      [(0, 0, 305.0), (1, 0, 298.5), (0, 0, 294.0),
       (1, 1, 17.1), (2, 1, 16.8), (0, 1, 16.5)]),
 ]
+
+
+def _record_submissions(db, auction, lines, placed, whole: bool) -> None:
+    """Write the Quote rows that stand behind the bids just created.
+
+    A bid is a submission - a price with its delivery costs and its taxes, at
+    a moment. The sample data builds the bids directly, so the submissions are
+    made here to match: one per bidder on a whole-auction auction, one per bid
+    on an item-by-item one.
+    """
+    by_line = {line.id: line for line in lines}
+    if whole:
+        for vendor_id in {bid.vendor_id for bid in placed}:
+            theirs = [bid for bid in placed if bid.vendor_id == vendor_id]
+            latest = {}
+            for bid in sorted(theirs, key=lambda b: b.created_at):
+                latest[bid.line_id] = bid
+            part = (db.query(Participant)
+                      .filter_by(auction_id=auction.id, vendor_id=vendor_id).first())
+            quote = Quote(auction_id=auction.id, vendor_id=vendor_id, scope="auction",
+                          freight=(part.bidder_freight or 0.0),
+                          packaging=(part.bidder_packaging or 0.0),
+                          other=(part.bidder_other or 0.0),
+                          created_at=max(bid.created_at for bid in theirs))
+            db.add(quote)
+            db.flush()
+            rows = []
+            for bid in latest.values():
+                bid.quote_id = quote.id
+                rows.append((by_line[bid.line_id], bid))
+            quote.total_all_in = round(sum((bid.landed_unit_price or bid.unit_price)
+                                           * float(by_line[bid.line_id].qty or 0.0)
+                                           for bid in latest.values()), 2)
+            quote.detail = snapshot(db, auction, rows, quote)
+        db.flush()
+        return
+    for bid in placed:
+        line = by_line.get(bid.line_id)
+        if line is None:                       # pragma: no cover - defensive
+            continue
+        quote = Quote(auction_id=auction.id, vendor_id=bid.vendor_id, scope="line",
+                      line_id=line.id, freight=(bid.freight or 0.0),
+                      packaging=(bid.packaging or 0.0), other=(bid.other or 0.0),
+                      created_at=bid.created_at,
+                      total_all_in=round((bid.landed_unit_price or bid.unit_price)
+                                         * float(line.qty or 0.0), 2))
+        db.add(quote)
+        db.flush()
+        bid.quote_id = quote.id
+        quote.detail = snapshot(db, auction, [(line, bid)], quote)
+    db.flush()
 
 
 def reset() -> None:
@@ -194,25 +248,43 @@ def build() -> None:
             live_auction = auction
 
         if delivered:
-            # What each bidder says it costs them to deliver the lot, and the
-            # tax they charge - exactly what they would type in themselves.
-            quotes = [(0, 6000.0, 900.0, "GST", 18.0),
-                      (1, 14000.0, 0.0, "GST", 18.0),
-                      (2, 2500.0, 0.0, "GST", 12.0)]
-            for index, freight, packaging, tax_name, rate in quotes:
+            # What each bidder says it costs them to deliver, and the tax they
+            # charge - exactly what they would type on the bid form. On a
+            # whole-auction auction that is one figure for the consignment; on
+            # an item-by-item one it is each item's own.
+            costs = [(0, 6000.0, 900.0, "GST", 18.0),
+                     (1, 14000.0, 0.0, "GST", 18.0),
+                     (2, 2500.0, 0.0, "GST", 12.0)]
+            for index, freight, packaging, tax_name, rate in costs:
                 part = (db.query(Participant)
                           .filter_by(auction_id=auction.id,
                                      vendor_id=vendors[index].id).first())
-                part.bidder_freight = freight
-                part.bidder_packaging = packaging
-                part.charges_updated_at = now
+                if whole:
+                    part.bidder_freight = freight
+                    part.bidder_packaging = packaging
+                    part.charges_updated_at = now
                 for made_line in made:
                     db.add(LineTax(auction_id=auction.id, line_id=made_line.id,
                                    vendor_id=vendors[index].id, name=tax_name,
                                    percent=rate))
+                if not whole:
+                    # Item by item: the figure is split across the items the
+                    # way a supplier would quote each consignment.
+                    for made_line in made:
+                        share = _share_of(auction, made_line, freight)
+                        pack = _share_of(auction, made_line, packaging)
+                        for bid in placed:
+                            if (bid.line_id == made_line.id
+                                    and bid.vendor_id == vendors[index].id):
+                                bid.freight = share
+                                bid.packaging = pack
             db.flush()
-            for index in {v for v, _, _, _, _ in quotes}:
+            for index in {v for v, _, _, _, _ in costs}:
                 reprice_vendor(db, auction, vendors[index].id)
+
+        # Every bid is a submission: it is what the bidder's own record of
+        # their bids is built from, and what they would take back.
+        _record_submissions(db, auction, made, placed, whole)
 
         if status is AuctionStatus.AWARDED:
             # Each line goes to whoever ended up lowest on it, at their own

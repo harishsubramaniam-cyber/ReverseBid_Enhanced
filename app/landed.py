@@ -39,6 +39,19 @@ from sqlalchemy.orm import Session
 
 from .models import Auction, AuctionLine, Bid, LineTax, Participant
 
+
+def per_line_costs(auction: Auction) -> bool:
+    """Are delivery costs quoted item by item, or once for the consignment?
+
+    It follows how the buyer said the business would be handed out, because
+    that is what the bidder is actually quoting for. Item by item, a bidder
+    may win one item and not another, so freight has to be that item's own.
+    All to one supplier, and there is a single consignment, so there is a
+    single freight figure and it is shared across the items by what each is
+    worth.
+    """
+    return (auction.award_mode or "line") != "basket"
+
 #: The three things a bidder is asked for, in the order they appear on screen.
 CHARGE_FIELDS = (("bidder_freight", "Freight"),
                  ("bidder_packaging", "Packaging"),
@@ -74,6 +87,24 @@ class Charges:
 
 
 NO_CHARGES = Charges()
+
+
+def line_charges(db: Session, line_id: int, vendor_id: int | None) -> Charges:
+    """What this bidder quoted to deliver ONE item, as it stands now.
+
+    Item-by-item auctions carry the costs on the bid itself: they were typed
+    on the same form, at the same moment, and they are part of that offer.
+    """
+    if not vendor_id:
+        return NO_CHARGES
+    from .engine import vendor_best
+    bid = vendor_best(db, line_id, vendor_id)
+    if bid is None:
+        return NO_CHARGES
+    return Charges(freight=round(float(bid.freight or 0.0), 2),
+                   packaging=round(float(bid.packaging or 0.0), 2),
+                   other=round(float(bid.other or 0.0), 2),
+                   other_label=(bid.other_label or ""), declared=True)
 
 
 def charges_for(db: Session, auction: Auction, vendor_id: int | None) -> Charges:
@@ -299,6 +330,9 @@ def shares_for(db: Session, auction: Auction, vendor_id: int | None,
     item being priced; it changes nothing, because that item already has a
     share.
     """
+    if per_line_costs(auction):
+        # Nothing to share: each item carries the costs quoted against it.
+        return {}
     charges = charges_for(db, auction, vendor_id)
     if not charges.any or not vendor_id:
         return {}
@@ -320,6 +354,40 @@ def shares_for(db: Session, auction: Auction, vendor_id: int | None,
     return shares
 
 
+def delivery_on(db: Session, auction: Auction, line: AuctionLine,
+                vendor_id: int | None, charges: Charges | None = None) -> float:
+    """The delivery cost this one item carries for this bidder, in money.
+
+    ``charges`` lets a submission that has not been saved yet be priced with
+    the figures being typed, which is what the bid screen and the check on a
+    new bid both need: the costs arrive with the bid, so they cannot be read
+    back out of the database until it is accepted.
+    """
+    if not auction.compare_landed or not vendor_id:
+        return 0.0
+    if per_line_costs(auction):
+        quoted = charges if charges is not None else line_charges(db, line.id, vendor_id)
+        return quoted.total
+    if charges is not None:
+        # A whole-auction submission being checked: share the figures typed.
+        return _share_of(auction, line, charges.total)
+    return shares_for(db, auction, vendor_id).get(line.id, 0.0)
+
+
+def _share_of(auction: Auction, line: AuctionLine, total: float) -> float:
+    """One item's share of a whole-auction charge, by what each item is worth."""
+    if total <= 0:
+        return 0.0
+    lines = list(auction.lines)
+    weights = {row.id: max(round(float(row.qty or 0.0)
+                                 * (float(row.starting_price) if row.has_ceiling else 1.0), 4),
+                           0.0001) for row in lines}
+    grand = sum(weights.values())
+    if grand <= 0:                        # pragma: no cover - guarded above
+        return 0.0
+    return round(total * weights.get(line.id, 0.0) / grand, 2)
+
+
 @dataclass
 class Breakdown:
     """One item, one bidder, priced out in full - what every screen shows."""
@@ -339,7 +407,8 @@ class Breakdown:
 
 
 def breakdown(db: Session, auction: Auction, line: AuctionLine, vendor_id: int | None,
-              unit_price: float) -> Breakdown:
+              unit_price: float, charges: Charges | None = None,
+              taxes: list | None = None) -> Breakdown:
     """Price one item out for one bidder, at a price they might type.
 
     Deliberately built on exactly the arithmetic the engine ranks on - per
@@ -354,10 +423,10 @@ def breakdown(db: Session, auction: Auction, line: AuctionLine, vendor_id: int |
     qty = float(line.qty or 0.0)
     price = round(float(unit_price), 2)
     bare = round(price * qty, 2)
-    share = (shares_for(db, auction, vendor_id).get(line.id, 0.0)
-             if auction.compare_landed else 0.0)
+    share = delivery_on(db, auction, line, vendor_id, charges)
     delivered = round(bare + share, 2)
-    rows = taxes_for(db, line.id, vendor_id) if auction.compare_landed else []
+    rows = (taxes if taxes is not None
+            else (taxes_for(db, line.id, vendor_id) if auction.compare_landed else []))
     rate = tax_rate(rows)
     share_unit = share / qty if qty else 0.0
     all_in_unit = round((price + share_unit) * (1 + rate / 100.0), 4)
@@ -395,7 +464,7 @@ def adders_for(db: Session, auction: Auction, line: AuctionLine | None,
     if not auction.compare_landed or not vendor_id or line is None:
         return NO_ADDERS
     qty = float(line.qty or 0.0) or 1.0
-    share = shares_for(db, auction, vendor_id, including=line.id).get(line.id, 0.0)
+    share = delivery_on(db, auction, line, vendor_id)
     rows = taxes_for(db, line.id, vendor_id)
     percent = tax_rate(rows)
     parts: list[tuple[str, float, str]] = []
@@ -406,6 +475,93 @@ def adders_for(db: Session, auction: Auction, line: AuctionLine | None,
     # Not rounded: the award screen and the ranking both build on this, and
     # rounding it here made them disagree by a paisa a unit.
     return Adders(per_unit=share / qty, percent=percent, lines=parts)
+
+
+def adders_from(db: Session, auction: Auction, line: AuctionLine, vendor_id: int | None,
+                charges: "Charges | None", taxes: list | None):
+    """The same shape as ``adders_for``, but for figures being typed right now."""
+    from .engine import Adders, NO_ADDERS
+    if not auction.compare_landed or not vendor_id or line is None:
+        return NO_ADDERS
+    qty = float(line.qty or 0.0) or 1.0
+    share = delivery_on(db, auction, line, vendor_id, charges)
+    rows = taxes if taxes is not None else taxes_for(db, line.id, vendor_id)
+    percent = tax_rate(rows)
+    parts: list[tuple[str, float, str]] = []
+    if share:
+        parts.append(("delivery", share / qty, "unit"))
+    for row in rows:
+        parts.append((row.name, float(row.percent), "percent"))
+    return Adders(per_unit=share / qty, percent=percent, lines=parts)
+
+
+def save_line_taxes(db: Session, auction: Auction, line: AuctionLine, vendor_id: int,
+                    rows: list, quote_id: int | None = None) -> list[LineTax]:
+    """Replace this bidder's taxes on one item with the ones just submitted.
+
+    Unlike the old separate tax panel, a rate of zero is kept. It was typed on
+    purpose - the bid could not be placed without it - and "GST 0%" on the
+    board is a statement, where an empty space is a question.
+    """
+    db.query(LineTax).filter_by(line_id=line.id, vendor_id=vendor_id).delete()
+    kept: list[LineTax] = []
+    for row in rows:
+        name = getattr(row, "name", None) or "Tax"
+        percent = round(float(getattr(row, "percent", 0.0) or 0.0), 4)
+        made = LineTax(auction_id=auction.id, line_id=line.id, vendor_id=vendor_id,
+                       name=str(name).strip()[:60] or "Tax", percent=percent,
+                       quote_id=quote_id)
+        db.add(made)
+        kept.append(made)
+    db.flush()
+    return kept
+
+
+def snapshot(db: Session, auction: Auction, rows: list, quote) -> str:
+    """The submission as typed, as JSON, for the bidder's own record.
+
+    Worked out once, at the moment of the bid, and never again: a bidder
+    looking back at what they offered should see what they offered, not a
+    figure recalculated under rules or costs that have since moved.
+    """
+    import json
+    from .utils import fmt_dt
+    charges = Charges(freight=float(quote.freight or 0.0),
+                      packaging=float(quote.packaging or 0.0),
+                      other=float(quote.other or 0.0),
+                      other_label=quote.other_label or "")
+    items = []
+    for line, bid in rows:
+        taxes = taxes_for(db, line.id, quote.vendor_id)
+        cut = breakdown(db, auction, line, quote.vendor_id, bid.unit_price,
+                        charges=(charges if quote.scope == "line" else None),
+                        taxes=taxes)
+        from .engine import line_label
+        items.append({
+            "line_id": line.id,
+            "item": line_label(line),
+            "qty": float(line.qty or 0.0),
+            "unit": (line.unit.code if line.unit else ""),
+            "unit_price": bid.unit_price,
+            "bare_total": cut.bare_total,
+            "delivery": cut.charge_share,
+            "delivered_total": cut.delivered_total,
+            "taxes": [{"name": name, "percent": percent, "amount": amount}
+                      for name, percent, amount in cut.taxes],
+            "tax_total": cut.tax_total,
+            "all_in_total": cut.all_in_total,
+            "all_in_unit": cut.all_in_unit,
+        })
+    return json.dumps({
+        "scope": quote.scope,
+        "placed_at": fmt_dt(quote.created_at or datetime.utcnow(), True),
+        "charges": {"freight": charges.freight, "packaging": charges.packaging,
+                    "other": charges.other, "other_label": charges.other_label,
+                    "total": charges.total},
+        "items": items,
+        "total_all_in": round(sum(row["all_in_total"] for row in items), 2),
+        "total_bare": round(sum(row["bare_total"] for row in items), 2),
+    })
 
 
 def reprice_vendor(db: Session, auction: Auction, vendor_id: int | None) -> int:
@@ -429,7 +585,10 @@ def reprice_vendor(db: Session, auction: Auction, vendor_id: int | None) -> int:
         if line is None:                 # pragma: no cover - orphan bid
             continue
         qty = float(line.qty or 0.0) or 1.0
-        share = 0.0 if bid.withdrawn else shares.get(bid.line_id, 0.0)
+        if per_line_costs(auction):
+            share = 0.0 if bid.withdrawn else bid.charges_total
+        else:
+            share = 0.0 if bid.withdrawn else shares.get(bid.line_id, 0.0)
         percent = tax_rate(taxes_for(db, bid.line_id, vendor_id))
         all_in_unit = round((bid.unit_price + share / qty) * (1 + percent / 100.0), 4)
         if bid.landed_unit_price != all_in_unit:

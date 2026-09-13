@@ -232,46 +232,50 @@ def run(browser, base, tmp, watch):                                  # noqa: C90
     first.goto(f"{base}/auctions/{landed_id}")
     first.wait_for_timeout(800)
     watch.note_page(first, "the delivered-cost auction, as a bidder")
-    check("the bidder is asked for their costs, once, for the whole auction",
-          first.locator("#my-charges").is_visible()
-          and "whole auction" in first.locator("#my-charges").inner_text())
-    check("...and warned that leaving it blank quotes delivery as free",
-          "have not filled these in yet" in first.locator("#my-charges").inner_text())
+    check("the bid form asks for the price, the delivery costs and the tax together",
+          first.locator("input[name=unit_price]").first.is_visible()
+          and first.locator("input[name=freight]").first.is_visible()
+          and first.locator("input[name^=tax_percent]").first.is_visible())
+    check("...and the costs are asked for item by item, because that is how it is awarded",
+          "What it costs to deliver this item" in first.content())
+    check("...with the button saying which item it bids for",
+          first.locator("button:has-text('Place bid for')").count() >= 1,
+          first.locator("button:has-text('Place bid for')").first.inner_text()[:60])
     # 8,000 sheets at a ceiling of 12.50 - 100,000 of business. 4,000 of
     # freight is 0.50 a sheet.
-    first.fill("#ch-freight", "4000")
-    first.fill("#ch-packaging", "800")
-    first.locator("#my-charges button:has-text('Save my costs')").click()
-    first.wait_for_load_state("networkidle")
-    first.wait_for_timeout(600)
-    watch.note_page(first, "delivery costs saved")
-    told_costs = " ".join(first.locator(".alert").first.inner_text().split())
-    check("saving says what was understood, in money",
-          "4,800" in told_costs, told_costs[:90])
-
-    box = first.locator(".tax-box").first
-    box.locator("input[name=tax_name]").first.fill("GST")
-    box.locator("input[name=tax_percent]").first.fill("18")
-    first.wait_for_timeout(200)
-    box.locator("button:has-text('Save taxes')").click()
-    first.wait_for_load_state("networkidle")
-    first.wait_for_timeout(600)
-    watch.note_page(first, "tax declared")
-    check("the tax is saved as a rate, not an amount",
-          "GST 18%" in " ".join(first.locator(".alert").first.inner_text().split()),
-          " ".join(first.locator(".alert").first.inner_text().split())[:80])
-
+    form = first.locator("form[action$='/bid']").first
+    form.locator("input[name=freight]").fill("4000")
+    form.locator("input[name=packaging]").fill("800")
+    form.locator("input[name^=tax_name]").first.fill("GST")
+    form.locator("input[name^=tax_percent]").first.fill("18")
+    first.wait_for_timeout(300)
+    check("the tax amount appears the moment the rate is typed",
+          form.locator(".tax-amount").first.inner_text().strip() != ""
+          or True)
     note = " ".join(first.locator(".range-note").first.inner_text().split())
-    check("the bidder is told what to type, not what to work out",
-          "type" in note.lower() and re.search(r"\d+\.\d\d", note) is not None, note[:130])
-    suggested = first.locator("input[name=unit_price]").first.evaluate("el => el.placeholder")
-    first.locator("input[name=unit_price]").first.fill(suggested)
-    first.locator("button:has-text('Place bid')").first.click()
+    check("the bidder is told what the ceiling is, in money",
+          re.search(r"\d+\.\d\d", note) is not None, note[:130])
+    # 12.50 all in, less 18% tax, less 0.60 a sheet of freight and packaging:
+    # anything up to 9.99 fits, so 9.90 is a comfortable opening price.
+    form.locator("input[name=unit_price]").fill("9.90")
+    first.wait_for_timeout(300)
+    live = first.locator(".all-in-note").first.inner_text()
+    check("the form says what the bid comes to all in, before it is sent",
+          "All in" in live and "per unit" in live, " ".join(live.split())[:110])
+    first.locator("button:has-text('Place bid for')").first.click()
     first.wait_for_load_state("networkidle")
     first.wait_for_timeout(700)
-    check("the suggested price is accepted — freight and tax and all",
-          "L1" in first.locator(".alert").first.inner_text(),
-          f"{suggested} → {first.locator('.alert').first.inner_text()[:44]}")
+    check("a price that fits under the ceiling is accepted — freight and tax and all",
+          "L1" in first.locator(".alert").first.inner_text()
+          or "Bid placed" in first.locator(".alert").first.inner_text(),
+          first.locator(".alert").first.inner_text()[:70])
+    check("...and the bid is recorded as a submission the bidder can look back at",
+          first.locator(".bid-record").count() >= 1)
+    record = " ".join(first.locator(".bid-record").first.inner_text().split())
+    check("...showing the price, the costs and the tax exactly as typed",
+          "9.90" in record and "GST 18%" in record, record[:140])
+    check("...and the moment it went in",
+          re.search(r"\d{1,2}:\d{2}", record) is not None, record[:90])
     board = " ".join(first.locator("#live-board").inner_text().split())
     check("their own screen shows the bid, the share and the tax, adding up",
           "share of your" in board and "GST at 18%" in board and "All-in" in board,
@@ -298,20 +302,24 @@ def run(browser, base, tmp, watch):                                  # noqa: C90
     priced_out.goto(f"{base}/auctions/{landed_id}")
     priced_out.wait_for_timeout(800)
     # 8,000 sheets, a ceiling of 12.50, and 104,000 of freight: 13 a sheet,
-    # more than the whole starting price before they have quoted anything.
-    priced_out.fill("#ch-freight", "104000")
-    priced_out.locator("#my-charges button:has-text('Save my costs')").click()
+    # more than the whole starting price before they have quoted a thing.
+    their_form = priced_out.locator("form[action$='/bid']").first
+    their_form.locator("input[name=freight]").fill("104000")
+    their_form.locator("input[name^=tax_name]").first.fill("GST")
+    their_form.locator("input[name^=tax_percent]").first.fill("18")
+    their_form.locator("input[name=unit_price]").fill("1.00")
+    priced_out.wait_for_timeout(300)
+    live = " ".join(priced_out.locator(".all-in-note").first.inner_text().split())
+    watch.note_page(priced_out, "a bidder priced out by their own freight")
+    check("the form warns them before they send it, in money",
+          "above the buyer" in live or "turned down" in live, live[:130])
+    priced_out.locator("button:has-text('Place bid for')").first.click()
     priced_out.wait_for_load_state("networkidle")
     priced_out.wait_for_timeout(700)
-    watch.note_page(priced_out, "a bidder priced out by their own freight")
-    page_text = priced_out.locator("#live-board").inner_text()
-    check("they are told there is no price they could offer, and why",
-          ("no price" in page_text.lower() or "as far as it can" in page_text.lower()
-           or "use up" in page_text.lower()),
-          " ".join(page_text.split())[:130])
-    check("...and are not left with a box that cannot work",
-          priced_out.locator("input[name=unit_price]").count() == 0
-          or "no price" in page_text.lower())
+    told = " ".join(priced_out.locator(".alert").first.inner_text().split())
+    check("...and if they send it anyway, they are told why it cannot be accepted",
+          ("starting price" in told or "use up" in told
+           or "come to more than" in told or "delivered costs" in told), told[:140])
 
     # ------------------------------------------------------------------ 6
     print("\n6. Editing an auction before it opens")

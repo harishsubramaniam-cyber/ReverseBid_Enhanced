@@ -345,9 +345,73 @@ class LineTax(Base):
     name = Column(String(60), nullable=False, default="Tax")
     percent = Column(Float, nullable=False, default=0.0)
     created_at = Column(DateTime, default=utcnow)
+    #: The submission that declared it. Taxes arrive with the bid they belong
+    #: to, so this says which one.
+    quote_id = Column(Integer, ForeignKey("quotes.id"), nullable=True, index=True)
 
     line = relationship("AuctionLine")
     vendor = relationship("Vendor")
+
+
+class Quote(Base):
+    """One submission by one bidder: everything they typed, in one go.
+
+    A bid is not a price on its own. It is a price *plus* what it costs to
+    deliver and what tax is charged on it, and those have to arrive together
+    or the board ranks people on half a quote. So a submission is recorded as
+    a Quote, and the Bid rows it produced point back at it.
+
+    ``scope`` says what the bidder was bidding for, which follows how the
+    buyer said the business would be handed out:
+
+      "line"     one item. The delivery costs on this row are that item's.
+      "auction"  the whole auction, priced item by item on one form, with one
+                 set of delivery costs for the consignment.
+
+    ``detail`` is the submission exactly as it was made - every price, every
+    tax rate and the money it came to - so months later a bidder can be shown
+    what they actually offered rather than a figure recalculated from today's
+    rules.
+    """
+    __tablename__ = "quotes"
+    id = Column(Integer, primary_key=True)
+    auction_id = Column(Integer, ForeignKey("auctions.id"), nullable=False, index=True)
+    vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    scope = Column(String(10), nullable=False, default="line")   # line | auction
+    #: The item, for a single-item submission. Empty for a whole-auction one.
+    line_id = Column(Integer, ForeignKey("auction_lines.id"), nullable=True)
+    #: What the bidder said delivery costs - for that item, or for the whole
+    #: auction, according to ``scope``.
+    freight = Column(Float, default=0.0)
+    packaging = Column(Float, default=0.0)
+    other = Column(Float, default=0.0)
+    other_label = Column(String(60), default="")
+    note = Column(String(400), default="")
+    #: What the whole submission comes to, all in. This is what a whole-auction
+    #: bid is ranked on.
+    total_all_in = Column(Float, default=0.0)
+    #: The submission as typed, for the bidder's own record. JSON text.
+    detail = Column(Text, default="")
+    withdrawn = Column(Boolean, default=False, index=True)
+    withdrawn_at = Column(DateTime)
+    withdraw_reason = Column(String(400), default="")
+    created_at = Column(DateTime, default=utcnow, index=True)
+
+    auction = relationship("Auction")
+    vendor = relationship("Vendor")
+    bids = relationship("Bid", back_populates="quote")
+
+    @property
+    def charges_total(self) -> float:
+        return round((self.freight or 0.0) + (self.packaging or 0.0) + (self.other or 0.0), 2)
+
+    def as_detail(self) -> dict:
+        import json
+        try:
+            return json.loads(self.detail or "{}")
+        except ValueError:                      # pragma: no cover - never written
+            return {}
 
 
 class Bid(Base):
@@ -369,10 +433,27 @@ class Bid(Base):
     withdrawn_at = Column(DateTime)
     withdraw_reason = Column(String(400), default="")
     created_at = Column(DateTime, default=utcnow, index=True)
+    #: The submission this bid arrived in. A whole-auction bid puts one of
+    #: these on every item at once, and they stand or fall together.
+    quote_id = Column(Integer, ForeignKey("quotes.id"), nullable=True, index=True)
+    #: What this bidder said it costs to deliver THIS item, when the auction
+    #: is handed out item by item. On a whole-auction auction the costs are
+    #: quoted once for the consignment and live on the quote instead.
+    freight = Column(Float, default=0.0)
+    packaging = Column(Float, default=0.0)
+    other = Column(Float, default=0.0)
+    other_label = Column(String(60), default="")
 
     auction = relationship("Auction", back_populates="bids")
     line = relationship("AuctionLine")
     vendor = relationship("Vendor")
+    quote = relationship("Quote", back_populates="bids")
+
+    @property
+    def charges_total(self) -> float:
+        """What this bidder quoted to deliver this item, all three figures."""
+        return round((self.freight or 0.0) + (self.packaging or 0.0)
+                     + (self.other or 0.0), 2)
 
 
 class Award(Base):

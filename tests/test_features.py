@@ -128,10 +128,32 @@ def landed_auction(db, buyer, invited, item, unit, *, ceiling=100.0, qty=10.0,
     return a
 
 
+#: Which bidder is behind each signed-in browser, so a bid can carry that
+#: bidder's own delivery costs and taxes the way the screen now asks for them.
+VENDOR_OF: dict[int, int] = {}
+
+
 def bid(client, auction, line, price):
-    return client.post(f"/auctions/{auction.id}/bid",
-                       data={"line_id": str(line.id), "unit_price": str(price)},
-                       follow_redirects=False)
+    """Place a bid the way the screen does: price, costs and taxes together."""
+    data = {"line_id": str(line.id), "unit_price": str(price)}
+    if auction.compare_landed:
+        from app.db import SessionLocal as _S
+        from app.models import LineTax as _Tax, Participant as _Part
+        vendor_id = VENDOR_OF.get(id(client))
+        probe = _S()
+        try:
+            seat = (probe.query(_Part)
+                         .filter_by(auction_id=auction.id, vendor_id=vendor_id).first())
+            freight = float(getattr(seat, "bidder_freight", 0.0) or 0.0)
+            taxes = (probe.query(_Tax)
+                          .filter_by(line_id=line.id, vendor_id=vendor_id).all())
+            rows = [(t.name, t.percent) for t in taxes] or [("GST", 0.0)]
+        finally:
+            probe.close()
+        data.update({"freight": str(freight), "packaging": "0", "other": "",
+                     "tax_name": [name for name, _ in rows],
+                     "tax_percent": [str(percent) for _, percent in rows]})
+    return client.post(f"/auctions/{auction.id}/bid", data=data, follow_redirects=False)
 
 
 def main() -> int:                                                      # noqa: C901
@@ -158,6 +180,7 @@ def main() -> int:                                                      # noqa: 
     b = login("buyer@f.local")
     for i, v in enumerate(vendors, start=1):
         clients[v.id] = login(f"v{i}@f.local")
+        VENDOR_OF[id(clients[v.id])] = v.id
     v1, v2, v3 = (clients[v.id] for v in vendors)
 
     # ================================================================== 1
@@ -237,10 +260,12 @@ def main() -> int:                                                      # noqa: 
     priced_out = landed_auction(db, buyer, [(vendors[0], {"freight": 120.0})],
                                 item, unit, ceiling=100.0, title="Priced out")
     pline = priced_out.lines[0]
-    pwindow = engine.bid_window(db, priced_out, pline, vendors[0].id)
+    # The costs arrive with the bid now, so the refusal is where it is
+    # explained: the screen cannot warn about figures nobody has typed yet.
     r = bid(v1, priced_out, pline, 1)
     check("a bidder whose delivery costs exceed the ceiling is told plainly",
-          pwindow.exhausted and "use up the whole" in told(r), told(r)[:90])
+          "use up the whole" in told(r)
+          and db.query(Bid).filter_by(line_id=pline.id).count() == 0, told(r)[:90])
 
     # ================================================================== 4
     print("\n4. Savings and the award are measured delivered")
@@ -479,8 +504,12 @@ def main() -> int:                                                      # noqa: 
           and joined.vendor_id == newcomer.id, str(r.status_code))
     check("...and signs them straight in", r.status_code == 303)
     check("they can see the auction", joiner.get(f"/auctions/{invited.id}").status_code == 200)
+    # 1.50 a unit over 10 units is 15 for the item, which is how a supplier
+    # quotes it and how the bid form now asks for it.
     r = joiner.post(f"/auctions/{invited.id}/bid", follow_redirects=False,
-                    data={"line_id": str(iline.id), "unit_price": "98.5"})
+                    data={"line_id": str(iline.id), "unit_price": "98.5",
+                          "freight": "15", "packaging": "0", "other": "",
+                          "tax_name": "GST", "tax_percent": "0"})
     db.expire_all()
     placed = engine.best_bid(db, iline.id)
     check("AND THEY CAN BID", placed is not None and placed.unit_price == 98.5,

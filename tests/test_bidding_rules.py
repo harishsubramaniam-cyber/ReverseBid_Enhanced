@@ -265,9 +265,18 @@ def main() -> int:                                                   # noqa: C90
     engine.withdraw_bid(db, mine, users[0], "changed my mind")
     db.expire_all()
     check("a withdrawn bid leaves the ranking", engine.best_bid(db, gone_line.id) is None)
-    check("...and the bidder cannot then offer a higher price",
-          place(gone, gone_line, users[0], 85.0) is not None)
-    check("...but may still go lower", place(gone, gone_line, users[0], 79.0) is None)
+    # A bid that has been taken back is not an offer any more, so it does not
+    # hold the bidder down to it: they may bid again anywhere under the
+    # ceiling. What they cannot do is quietly walk an offer back up - only the
+    # most recent submission can be taken back, the one underneath it stands
+    # again, and the buyer is told each time.
+    check("...and the bidder may bid again, the taken-back price no longer binding them",
+          place(gone, gone_line, users[0], 85.0) is None)
+    check("...but never above the buyer's starting price",
+          place(gone, gone_line, users[0], 101.0) is not None)
+    check("...and a standing bid still holds them down",
+          place(gone, gone_line, users[0], 90.0) is not None)
+    check("...while going lower is fine", place(gone, gone_line, users[0], 79.0) is None)
     db.expire_all()
     theirs = engine.vendor_best(db, gone_line.id, vendors[0].id)
     try:

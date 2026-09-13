@@ -36,7 +36,7 @@ os.environ.pop("RA_SMTP_HOST", None)
 
 from fastapi.testclient import TestClient           # noqa: E402
 
-from app import engine, landed, mailer              # noqa: E402
+from app import engine, landed, quotes as quotes_mod, mailer              # noqa: E402
 from app.db import Base, SessionLocal, engine as db_engine   # noqa: E402
 from app.main import app                            # noqa: E402
 from app.models import (Auction, AuctionLine, AuctionStatus, Award, Bid,  # noqa: E402
@@ -94,8 +94,13 @@ def flash_of(response) -> str:
 
 
 def make_auction(db, buyer, vendors, specs, *, landed_on=True, min_dec=0.0,
-                 title="Delivered", minutes=90):
-    """``specs`` is a list of (item, unit, qty, ceiling)."""
+                 title="Delivered", minutes=90, mode="line"):
+    """``specs`` is a list of (item, unit, qty, ceiling).
+
+    ``mode`` is how the buyer says the business will be handed out, which is
+    also how it is bid for: "line" item by item, "basket" the whole lot to one
+    supplier.
+    """
     now = datetime.utcnow()
     auction = Auction(reference=f"RA-E-{now.timestamp():.6f}", title=title,
                       creator_id=buyer.id, org_id=buyer.org_id, status=AuctionStatus.LIVE,
@@ -103,7 +108,7 @@ def make_auction(db, buyer, vendors, specs, *, landed_on=True, min_dec=0.0,
                       end_at=now + timedelta(minutes=minutes),
                       original_end_at=now + timedelta(minutes=minutes),
                       decrement_type=DecrementType.ABSOLUTE, min_decrement=min_dec,
-                      compare_landed=landed_on, auto_extend=False,
+                      compare_landed=landed_on, auto_extend=False, award_mode=mode,
                       published_at=now - timedelta(hours=1))
     db.add(auction)
     db.flush()
@@ -118,25 +123,102 @@ def make_auction(db, buyer, vendors, specs, *, landed_on=True, min_dec=0.0,
     return auction
 
 
-def bid(client, auction, line, price):
-    return client.post(f"/auctions/{auction.id}/bid",
-                       data={"line_id": str(line.id), "unit_price": str(price)},
-                       follow_redirects=False)
+#: What each bidder is going to type on their next bid. A bid now carries its
+#: own delivery costs and its own taxes - they are part of the offer - so a
+#: test that used to save them in a panel first stages them here instead, and
+#: the next bid sends them.
+STAGED_COSTS: dict[tuple, dict] = {}
+STAGED_TAXES: dict[tuple, list] = {}
+
+
+class Staged:
+    """What the staging helpers hand back, so old call sites still read well."""
+    status_code = 303
+    headers: dict = {}
+
+    def __init__(self, message=""):
+        self.message = message
 
 
 def set_charges(client, auction, freight=0, packaging=0, other=0, label=""):
-    return client.post(f"/auctions/{auction.id}/charges",
-                       data={"freight": str(freight), "packaging": str(packaging),
-                             "other": str(other), "other_label": label},
-                       follow_redirects=False)
+    """Stage what this bidder quotes to deliver this auction.
+
+    The figure is for the whole auction, the way a supplier quotes it. On an
+    auction handed out item by item the bid form asks for each item's own
+    costs, so the next bid on an item sends that item's share of this figure -
+    the same money, described the way that auction asks for it.
+    """
+    STAGED_COSTS[(id(client), auction.id)] = {
+        "freight": float(freight or 0), "packaging": float(packaging or 0),
+        "other": float(other or 0), "label": label}
+    return Staged()
 
 
 def set_taxes(client, auction, line, rows):
-    # Repeated form fields, exactly as the browser sends one row per tax.
-    data = {"tax_name": [name for name, _ in rows] or [""],
+    STAGED_TAXES[(id(client), line.id)] = list(rows)
+    return Staged()
+
+
+def _costs_for(client, auction, line):
+    """The three figures this bidder will type against one item."""
+    from app import landed as _landed
+    staged = STAGED_COSTS.get((id(client), auction.id))
+    if not staged:
+        return {"freight": 0.0, "packaging": 0.0, "other": 0.0, "label": ""}
+    if len(auction.lines) == 1:
+        return staged
+    share = lambda amount: _landed._share_of(auction, line, amount)
+    return {"freight": share(staged["freight"]), "packaging": share(staged["packaging"]),
+            "other": share(staged["other"]), "label": staged["label"]}
+
+
+def bid(client, auction, line, price):
+    """One bid on one item, as the screen sends it - price, costs and taxes."""
+    data = {"line_id": str(line.id), "unit_price": str(price)}
+    if auction.compare_landed:
+        costs = _costs_for(client, auction, line)
+        rows = STAGED_TAXES.get((id(client), line.id)) or [("GST", 0)]
+        data.update({"freight": str(costs["freight"]), "packaging": str(costs["packaging"]),
+                     "other": str(costs["other"]), "other_label": costs["label"],
+                     "tax_name": [name for name, _ in rows],
+                     "tax_percent": [str(percent) for _, percent in rows]})
+    return client.post(f"/auctions/{auction.id}/bid", data=data, follow_redirects=False)
+
+
+def bid_with_costs(client, auction, line, price, freight=0, packaging=0, other=0,
+                   rows=None):
+    """A bid that carries exactly these costs and these taxes."""
+    rows = rows if rows is not None else [("GST", 0)]
+    data = {"line_id": str(line.id), "unit_price": str(price),
+            "freight": str(freight), "packaging": str(packaging), "other": str(other),
+            "tax_name": [name for name, _ in rows] or [""],
             "tax_percent": [str(percent) for _, percent in rows] or [""]}
-    return client.post(f"/auctions/{auction.id}/lines/{line.id}/taxes", data=data,
-                       follow_redirects=False)
+    return client.post(f"/auctions/{auction.id}/bid", data=data, follow_redirects=False)
+
+
+def bid_with_taxes(client, auction, line, price, rows):
+    """A bid that carries exactly these taxes, whatever was staged before."""
+    data = {"line_id": str(line.id), "unit_price": str(price),
+            "freight": str(_costs_for(client, auction, line)["freight"]),
+            "packaging": "0", "other": "",
+            "tax_name": [name for name, _ in rows] or [""],
+            "tax_percent": [str(percent) for _, percent in rows] or [""]}
+    return client.post(f"/auctions/{auction.id}/bid", data=data, follow_redirects=False)
+
+
+def basket_bid(client, auction, prices, freight=0, packaging=0, other=0, label="",
+               taxes=None):
+    """One bid for the whole auction: every item, and one set of delivery costs."""
+    taxes = taxes or {}
+    data = {"freight": str(freight), "packaging": str(packaging), "other": str(other),
+            "other_label": label}
+    for line in auction.lines:
+        if line.id in prices:
+            data[f"price_{line.id}"] = str(prices[line.id])
+        rows = taxes.get(line.id) or [("GST", 0)]
+        data[f"tax_name_{line.id}"] = [name for name, _ in rows]
+        data[f"tax_percent_{line.id}"] = [str(percent) for _, percent in rows]
+    return client.post(f"/auctions/{auction.id}/bid-all", data=data, follow_redirects=False)
 
 
 def main() -> int:                                                   # noqa: C901
@@ -166,37 +248,40 @@ def main() -> int:                                                   # noqa: C90
     one, two, three = (login(f"s{i}@e.local") for i in (1, 2, 3))
 
     # ------------------------------------------------------------------ 1
-    print("\n1. Freight is quoted once, for the whole auction")
+    print("\n1. A whole-auction auction is bid for as one lot")
     # Two items: pens are worth 10,000 at the ceiling, paper 40,000. So a
     # freight bill should split one to four.
     auction = make_auction(db, buyer, vendors,
-                           [(pens, unit, 1000, 10.0), (paper, unit, 200, 200.0)])
+                           [(pens, unit, 1000, 10.0), (paper, unit, 200, 200.0)],
+                           mode="basket")
     pens_line, paper_line = auction.lines[0], auction.lines[1]
 
     page = one.get(f"/auctions/{auction.id}").text
-    check("the bidder is asked for freight, packaging and other costs",
+    check("the bidder is given one form for the whole auction",
+          "Place bid for the whole auction" in page)
+    check("...which asks for freight, packaging and other costs",
           all(word in page for word in ("Freight", "Packaging", "Other costs")))
-    check("...once, for the whole auction, not per item",
-          "for the whole\n        auction" in page or "whole auction" in page)
-    check("...and is warned while it is still blank",
-          "have not filled these in yet" in page)
+    check("...once, for the consignment, not per item",
+          "Delivery costs for the whole consignment" in page)
+    check("...and asks for the tax on each item",
+          page.count("Tax on this item") == 2, page.count("Tax on this item"))
+    check("there is no separate bid button on an item",
+          "Place bid for Pens" not in page)
 
-    response = set_charges(one, auction, freight=4000, packaging=800, other=200,
-                           label="Unloading")
+    response = basket_bid(one, auction, {pens_line.id: 9.0, paper_line.id: 180.0},
+                          freight=4000, packaging=800, other=200, label="Unloading")
     told = flash_of(response)
-    check("saving them says what was understood",
-          "5,000" in told and "Freight" in told and "Unloading" in told, told[:90])
-
+    check("one press bids for everything", "whole auction" in told, told[:90])
+    db.expire_all()
     charges = landed.charges_for(db, auction, vendors[0].id)
     check("the three figures are kept apart", close(charges.freight, 4000)
           and close(charges.packaging, 800) and close(charges.other, 200))
     check("...and add up to one number", close(charges.total, 5000), charges.total)
+    check("every item carries a bid", len(engine.all_line_bids(db, pens_line.id)) == 1
+          and len(engine.all_line_bids(db, paper_line.id)) == 1)
 
     # ------------------------------------------------------------------ 2
-    print("\n2. It is shared across the items, by what each is worth")
-    bid(one, auction, pens_line, 9.0)          # 9,000
-    bid(one, auction, paper_line, 180.0)       # 36,000
-    db.expire_all()
+    print("\n2. The consignment's costs are shared by what each item is worth")
     shares = landed.shares_for(db, auction, vendors[0].id)
     # Ceilings are the weights: 10,000 and 40,000 - one fifth and four fifths.
     check("the cheaper item carries the smaller share",
@@ -205,42 +290,38 @@ def main() -> int:                                                   # noqa: C90
           shares.get(paper_line.id))
     check("the shares add up to exactly what was quoted",
           close(sum(shares.values()), 5000), sum(shares.values()))
-
     quote = landed.breakdown(db, auction, pens_line, vendors[0].id, 9.0)
     check("an item's delivered total is its bid plus its share",
           close(quote.bare_total, 9000) and close(quote.charge_share, 1000)
           and close(quote.delivered_total, 10000), quote)
+    standing = quotes_mod.standings(db, auction)
+    check("the auction is ranked on the grand total",
+          standing and close(standing[0]["total"], 10000 + 40000),
+          standing[0]["total"] if standing else None)
 
     # ------------------------------------------------------------------ 3
-    print("\n3. A share does not move as the bidder works through the items")
-    # Sharing only across what had been priced so far made the FIRST bid carry
-    # the whole freight bill, so the same bidder was refused on a small item
-    # and accepted on a large one depending only on which they typed first.
-    solo = make_auction(db, buyer, vendors,
-                        [(pens, unit, 100, 10.0), (paper, unit, 100, 10.0),
-                         (rope, unit, 100, 10.0)], title="Three equal items")
-    set_charges(two, solo, freight=90)
+    print("\n3. A whole-auction bid has to cover the whole auction")
+    partial = basket_bid(two, auction, {pens_line.id: 9.0},
+                         freight=100)
+    told = flash_of(partial)
+    check("leaving an item unpriced is refused, and the item is named",
+          "has to cover every item" in told and "Paper" in told, told[:110])
     db.expire_all()
-    before = landed.shares_for(db, solo, vendors[1].id)
-    check("three items of equal value take an equal share, before any bid",
-          all(close(before[line.id], 30) for line in solo.lines), before)
-    check("...and the shares still add up to the whole bill",
-          close(sum(before.values()), 90), sum(before.values()))
-    first = bid(two, solo, solo.lines[0], 9.0)
-    check("the first bid is accepted — its share is a third, not the lot",
-          "L1" in flash_of(first), flash_of(first)[:70])
+    check("...and nothing at all was written for that bidder",
+          engine.vendor_best(db, pens_line.id, vendors[1].id) is None)
+    beat = basket_bid(two, auction, {pens_line.id: 8.0, paper_line.id: 170.0},
+                      freight=1000)
     db.expire_all()
-    after = landed.shares_for(db, solo, vendors[1].id)
-    check("...and pricing it changed nobody's share, including their own",
-          after == before, after)
-    placed = engine.vendor_best(db, solo.lines[0].id, vendors[1].id)
-    check("the delivered price is the bid plus that share, per unit",
-          close(placed.landed_unit_price, 9 + 30 / 100), placed.landed_unit_price)
-    bid(two, solo, solo.lines[1], 9.0)
-    db.expire_all()
-    check("a second item is priced on exactly the same footing",
-          close(engine.vendor_best(db, solo.lines[1].id, vendors[1].id).landed_unit_price,
-                9.3))
+    check("a bid that covers everything is accepted", "whole auction" in flash_of(beat),
+          flash_of(beat)[:80])
+    standing = quotes_mod.standings(db, auction)
+    check("...and the cheaper total takes the lead",
+          standing[0]["vendor_id"] == vendors[1].id,
+          [(row["vendor_id"], row["total"]) for row in standing])
+    too_high = basket_bid(two, auction, {pens_line.id: 9.0, paper_line.id: 180.0},
+                          freight=1000)
+    check("a bid above your own last total is refused",
+          "below it" in flash_of(too_high), flash_of(too_high)[:90])
 
     # ------------------------------------------------------------------ 4
     print("\n4. Taxes: the rate is typed, the money is worked out")
@@ -251,11 +332,16 @@ def main() -> int:                                                   # noqa: C90
                                  title="Taxed properly")
     tax_line = taxes_auction.lines[0]
     set_charges(one, taxes_auction, freight=5000)
-    bid(one, taxes_auction, tax_line, 9.0)
-    response = set_taxes(one, taxes_auction, tax_line, [("GST", 18), ("Cess", 2)])
-    told = flash_of(response)
-    check("both taxes are saved", "GST 18%" in told and "Cess 2%" in told, told[:90])
+    response = bid_with_taxes(one, taxes_auction, tax_line, 9.0,
+                              [("GST", 18), ("Cess", 2)])
+    check("the bid carries both taxes with it",
+          "L1" in flash_of(response) or "Bid placed" in flash_of(response),
+          flash_of(response)[:80])
     db.expire_all()
+    saved = landed.taxes_for(db, tax_line.id, vendors[0].id)
+    check("both are recorded against the item, by name and rate",
+          [(row.name, row.percent) for row in saved] == [("GST", 18.0), ("Cess", 2.0)],
+          [(row.name, row.percent) for row in saved])
     quote = landed.breakdown(db, taxes_auction, tax_line, vendors[0].id, 9.0)
     check("the delivered value is the bid plus the freight share",
           close(quote.bare_total, 9000) and close(quote.charge_share, 5000)
@@ -268,25 +354,31 @@ def main() -> int:                                                   # noqa: C90
           close(engine.compare_price(engine.vendor_best(db, tax_line.id, vendors[0].id)),
                 16.8))
 
-    response = set_taxes(one, taxes_auction, tax_line, [("Nonsense", 250)])
+    refused = bid_with_taxes(one, taxes_auction, tax_line, 9.0, [("Nonsense", 250)])
     check("a rate of 250% is refused, in words",
-          "not a rate anybody charges" in flash_of(response), flash_of(response)[:70])
-    check("...and the sensible taxes are still there",
+          "not a rate anybody charges" in flash_of(refused), flash_of(refused)[:70])
+    check("...and the bid that was standing is untouched",
           landed.tax_rate(landed.taxes_for(db, tax_line.id, vendors[0].id)) == 20)
-    response = set_taxes(one, taxes_auction, tax_line, [("GST", "eighteen")])
+    refused = bid_with_taxes(one, taxes_auction, tax_line, 9.0, [("GST", "eighteen")])
     check("a rate typed as words is refused too",
-          "is not a percentage" in flash_of(response), flash_of(response)[:70])
+          "is not a percentage" in flash_of(refused), flash_of(refused)[:70])
     check("...and still nothing was changed",
           landed.tax_rate(landed.taxes_for(db, tax_line.id, vendors[0].id)) == 20)
-
-    response = set_taxes(one, taxes_auction, tax_line, [])
-    check("clearing the taxes is allowed and says so",
-          "no taxes on" in flash_of(response), flash_of(response)[:70])
+    refused = bid_with_taxes(one, taxes_auction, tax_line, 8.0, [])
+    check("a bid with no tax at all is refused, because nobody can compare it",
+          "Say what tax" in flash_of(refused), flash_of(refused)[:80])
     db.expire_all()
-    check("...and the ranked price drops back to the delivered price",
+    check("...and the bid did not go in",
+          close(engine.vendor_best(db, tax_line.id, vendors[0].id).unit_price, 9.0))
+    placed = bid_with_taxes(one, taxes_auction, tax_line, 8.0, [("GST", 0)])
+    check("a rate of nought is a perfectly good answer, typed on purpose",
+          "L1" in flash_of(placed) or "Bid placed" in flash_of(placed),
+          flash_of(placed)[:70])
+    db.expire_all()
+    check("...and the ranked price drops to the delivered price, with no tax on it",
           close(engine.compare_price(engine.vendor_best(db, tax_line.id, vendors[0].id)),
-                14.0))
-    set_taxes(one, taxes_auction, tax_line, [("GST", 18), ("Cess", 2)])
+                13.0),
+          engine.compare_price(engine.vendor_best(db, tax_line.id, vendors[0].id)))
 
     # ------------------------------------------------------------------ 5
     print("\n5. The cheapest bid does not always win — and should not")
@@ -333,19 +425,32 @@ def main() -> int:                                                   # noqa: C90
           [engine.compare_price(b) for b in ranked])
 
     # ------------------------------------------------------------------ 6
-    print("\n6. Changing your costs re-ranks your bids at once")
+    print("\n6. Revising your costs means bidding again, and it re-ranks at once")
     before = engine.compare_price(engine.vendor_best(db, line.id, vendors[1].id))
     set_charges(two, near, freight=2000)
+    again = bid(two, near, line, 79.0)
     db.expire_all()
     after = engine.compare_price(engine.vendor_best(db, line.id, vendors[1].id))
-    check("cutting the freight cuts the delivered price",
-          close(before, 92) and close(after, 82), f"{before} -> {after}")
+    check("a keener price with less freight on it is a much better offer",
+          close(before, 92) and close(after, 81), f"{before} -> {after}")
+    check("...and it was accepted as a bid, not a quiet edit",
+          "L1" in flash_of(again) or "Bid placed" in flash_of(again),
+          flash_of(again)[:70])
     ranked = engine.best_per_vendor(db, line.id)
-    check("...and the ranking follows immediately",
+    check("...so the ranking follows immediately",
           ranked[0].vendor_id == vendors[1].id, [b.vendor_id for b in ranked])
     mine = engine.vendor_best(db, line.id, vendors[0].id)
     check("the other bidder's price is untouched by all of it",
           close(engine.compare_price(mine), 90) and close(mine.unit_price, 90))
+    record = quotes_mod.history(db, near, vendors[1].id)
+    check("the bidder's own record keeps both submissions, newest first",
+          len(record) == 2 and record[0]["status"] == "standing"
+          and record[1]["status"] == "superseded",
+          [row["status"] for row in record])
+    check("...and each one remembers the freight it was made with",
+          close(record[0]["charges"]["freight"], 2000)
+          and close(record[1]["charges"]["freight"], 12000),
+          [row["charges"].get("freight") for row in record])
 
     # ------------------------------------------------------------------ 7
     print("\n7. The ceiling and the decrements are the all-in price")
@@ -363,30 +468,27 @@ def main() -> int:                                                   # noqa: C90
     check("a bid that lands exactly on the ceiling is accepted",
           "L1" in flash_of(response), flash_of(response)[:60])
 
-    response = set_taxes(three, tight, tline, [("GST", 18)])
-    told = flash_of(response)
-    check("adding tax that would push an accepted bid over the ceiling is refused",
-          "cannot be saved as they stand" in told, told[:120])
-    check("...naming the item and the arithmetic",
-          "Pens" in told and "above the buyer" in told, told[:160])
+    refused = bid_with_taxes(three, tight, tline, 90.0, [("GST", 18)])
+    told = flash_of(refused)
+    check("the same price with tax added is refused: all in, it breaks the ceiling",
+          "above the starting price" in told, told[:120])
+    check("...and the message shows the arithmetic that did it",
+          "delivered" in told.lower() and "GST" in told, told[:160])
     db.expire_all()
     standing = engine.vendor_best(db, tline.id, vendors[2].id)
-    check("...and the bid is left exactly as it was, still under the ceiling",
+    check("...and the bid that stands is left exactly as it was",
           close(engine.compare_price(standing), 100.0), engine.compare_price(standing))
 
-    print("   declaring the tax first is the way round it")
+    print("   the price that fits, once the tax is in, is accepted")
     fresh = make_auction(db, buyer, vendors, [(pens, unit, 100, 100.0)],
-                         title="Tax declared first", min_dec=1.0)
+                         title="Tax declared with the bid", min_dec=1.0)
     fline = fresh.lines[0]
     set_charges(three, fresh, freight=1000)           # 10 per unit
-    set_taxes(three, fresh, fline, [("GST", 18)])
-    db.expire_all()
-    window = engine.bid_window(db, fresh, fline, vendors[2].id)
-    # (100 / 1.18) - 10 = 74.74 to the paisa, rounded down so it lands under.
-    check("the suggested price allows for freight and tax together",
-          close(window.max_allowed, 74.74), window.max_allowed)
-    response = bid(three, fresh, fline, window.max_allowed)
-    check("...and that exact price is accepted", "L1" in flash_of(response),
+    # (100 / 1.18) - 10 = 74.74 to the paisa, which lands just under the
+    # ceiling once the freight and the tax are both on it.
+    response = bid_with_taxes(three, fresh, fline, 74.74, [("GST", 18)])
+    check("a price worked out for the freight and the tax together is accepted",
+          "L1" in flash_of(response) or "Bid placed" in flash_of(response),
           flash_of(response)[:70])
     db.expire_all()
     best = engine.vendor_best(db, fline.id, vendors[2].id)
@@ -399,22 +501,64 @@ def main() -> int:                                                   # noqa: C90
     check("...built from the bid, the freight share and the tax, in that order",
           close(cut.bare_total, 7474) and close(cut.charge_share, 1000)
           and close(cut.delivered_total, 8474) and close(cut.tax_total, 1525.32), cut)
+    refused = bid_with_taxes(three, fresh, fline, 74.75, [("GST", 18)])
+    check("...while a paisa more is over the ceiling and refused",
+          "above the starting price" in flash_of(refused), flash_of(refused)[:80])
 
     # ------------------------------------------------------------------ 8
-    print("\n8. Withdrawing an item leaves the others where they were")
+    print("\n8. Taking back a bid, item by item and for the whole auction")
+    solo = make_auction(db, buyer, vendors,
+                        [(pens, unit, 100, 10.0), (paper, unit, 100, 10.0),
+                         (rope, unit, 100, 10.0)], title="Three equal items")
+    set_charges(two, solo, freight=90)                # 30 to each item
+    bid(two, solo, solo.lines[0], 9.0)                # 9 + 0.30 = 9.30
+    bid(two, solo, solo.lines[1], 9.0)
     db.expire_all()
-    before = landed.shares_for(db, solo, vendors[1].id)
-    doomed = engine.vendor_best(db, solo.lines[1].id, vendors[1].id)
-    two.post(f"/auctions/{solo.id}/bids/{doomed.id}/withdraw",
-             data={"reason": "quoted in error"}, follow_redirects=False)
+    check("each item is priced with its own costs on it",
+          close(engine.vendor_best(db, solo.lines[0].id, vendors[1].id).landed_unit_price,
+                9.3)
+          and close(engine.vendor_best(db, solo.lines[1].id, vendors[1].id).landed_unit_price,
+                    9.3))
+    older = engine.vendor_best(db, solo.lines[0].id, vendors[1].id)
+    r = two.post(f"/auctions/{solo.id}/bids/{older.id}/withdraw",
+                 data={"reason": "the wrong one"}, follow_redirects=False)
     db.expire_all()
-    check("the item still quoted is priced exactly as it was",
+    check("an earlier bid cannot be pulled out from under the record",
+          "most recent" in flash_of(r)
+          and engine.vendor_best(db, solo.lines[0].id, vendors[1].id) is not None,
+          flash_of(r)[:70])
+    r = two.post(f"/auctions/{solo.id}/withdraw-last",
+                 data={"reason": "quoted in error"}, follow_redirects=False)
+    db.expire_all()
+    check("taking back the last bid takes back that item only",
+          "taken back" in flash_of(r), flash_of(r)[:70])
+    check("...the item still quoted is priced exactly as it was",
           close(engine.vendor_best(db, solo.lines[0].id, vendors[1].id).landed_unit_price,
                 9.3))
-    check("...and the shares have not moved either",
-          landed.shares_for(db, solo, vendors[1].id) == before)
-    check("the withdrawn bid is out of the ranking altogether",
+    check("...and the withdrawn item is out of the ranking altogether",
           engine.vendor_best(db, solo.lines[1].id, vendors[1].id) is None)
+    print("   a whole-auction bid is taken back in one piece")
+    lot = make_auction(db, buyer, vendors, [(pens, unit, 100, 10.0),
+                                            (paper, unit, 100, 10.0)],
+                       title="One lot", mode="basket")
+    basket_bid(two, lot, {lot.lines[0].id: 9.0, lot.lines[1].id: 9.0}, freight=100)
+    basket_bid(two, lot, {lot.lines[0].id: 8.0, lot.lines[1].id: 8.0}, freight=100)
+    db.expire_all()
+    check("the later bid is the one that stands",
+          close(quotes_mod.standings(db, lot)[0]["total"], 1700),
+          quotes_mod.standings(db, lot)[0]["total"])
+    r = two.post(f"/auctions/{lot.id}/withdraw-last", data={"reason": "wrong file"},
+                 follow_redirects=False)
+    db.expire_all()
+    check("taking it back takes every item with it, not just one",
+          all(engine.vendor_best(db, line.id, vendors[1].id).unit_price == 9.0
+              for line in lot.lines),
+          [engine.vendor_best(db, line.id, vendors[1].id).unit_price for line in lot.lines])
+    check("...and the bid before it stands again, as a whole",
+          close(quotes_mod.standings(db, lot)[0]["total"], 1900),
+          quotes_mod.standings(db, lot)[0]["total"])
+    check("...and the message says what stands now",
+          "stands again" in flash_of(r), flash_of(r)[:90])
 
     # ------------------------------------------------------------------ 9
     print("\n9. The buyer sees the breakdown, the bidder sees only their own")
@@ -437,14 +581,19 @@ def main() -> int:                                                   # noqa: C90
     db.expire_all()
     best = engine.vendor_best(db, pline.id, vendors[0].id)
     check("the ranked price is the bid itself", close(engine.compare_price(best), 40))
-    response = set_charges(one, plain, freight=5000)
-    check("the costs panel refuses to take figures that would mean nothing",
-          "decided on the bid price alone" in flash_of(response), flash_of(response)[:70])
-    response = set_taxes(one, plain, pline, [("GST", 18)])
-    check("...and so does the tax panel",
-          "taxes are not collected" in flash_of(response), flash_of(response)[:70])
     page = one.get(f"/auctions/{plain.id}").text
-    check("neither panel is even drawn", "Your delivery costs for this auction" not in page)
+    check("the bid form asks for nothing but a price",
+          "Tax on this item" not in page and "What it costs to deliver" not in page)
+    # Costs posted anyway - by hand, or by an old page - are ignored rather
+    # than quietly added to a price nobody is comparing that way.
+    one.post(f"/auctions/{plain.id}/bid",
+             data={"line_id": str(pline.id), "unit_price": "39", "freight": "5000",
+                   "tax_name": "GST", "tax_percent": "18"}, follow_redirects=False)
+    db.expire_all()
+    best = engine.vendor_best(db, pline.id, vendors[0].id)
+    check("...and figures sent anyway change nothing",
+          close(engine.compare_price(best), 39) and close(best.charges_total, 0),
+          engine.compare_price(best))
 
     # ------------------------------------------------------------------ 11
     print("\n11. The award books the price the buyer was shown")
@@ -468,9 +617,9 @@ def main() -> int:                                                   # noqa: C90
 
     # ------------------------------------------------------------------ 12
     print("\n12. Nobody can reach anybody else's numbers")
-    response = set_charges(three, auction, freight=1)
+    basket_bid(three, auction, {pens_line.id: 7.0, paper_line.id: 160.0}, freight=1)
     db.expire_all()
-    check("a bidder saving costs only ever changes their own",
+    check("a bidder's costs are their own, and touch nobody else's",
           close(landed.charges_for(db, auction, vendors[0].id).total, 5000)
           and close(landed.charges_for(db, auction, vendors[2].id).total, 1))
     other_org = Organisation(name="Somebody else")
@@ -484,9 +633,9 @@ def main() -> int:                                                   # noqa: C90
                 password_hash=hash_password(PW)))
     db.commit()
     outsider = login("out@x.local")
-    response = outsider.post(f"/auctions/{auction.id}/charges",
+    response = outsider.post(f"/auctions/{auction.id}/bid-all",
                              data={"freight": "999"}, follow_redirects=False)
-    check("a bidder from another organisation cannot touch this auction's costs",
+    check("a bidder from another organisation cannot bid on it at all",
           response.status_code in (403, 404), response.status_code)
     response = outsider.post(f"/auctions/{auction.id}/lines/{pens_line.id}/taxes",
                              data={"tax_name": "GST", "tax_percent": "18"},
@@ -532,26 +681,24 @@ def main() -> int:                                                   # noqa: C90
     check("...to the paisa it is really worth",
           close(engine.compare_price(mine), 10.0049, 1e-6), engine.compare_price(mine))
 
-    print("   an item with no ceiling cannot drag another over its own")
+    print("   what one item costs to deliver cannot move another item's price")
     mixed = make_auction(db, buyer, vendors,
                          [(pens, unit, 100, 100.0), (paper, unit, 100, None)],
                          title="One capped, one open")
     capped, open_line = mixed.lines[0], mixed.lines[1]
-    set_charges(one, mixed, freight=2000)
+    # 1,000 to deliver the capped item: 10 a unit, so 85 lands at 95 all in.
+    placed = bid_with_costs(one, mixed, capped, 85.0, freight=1000, rows=[("GST", 0)])
     db.expire_all()
-    offered = engine.bid_window(db, mixed, capped, vendors[0].id).max_allowed
-    bid(one, mixed, open_line, 500.0)
+    was = engine.compare_price(engine.vendor_best(db, capped.id, vendors[0].id))
+    check("the capped item is priced on its own costs",
+          close(was, 95.0), was)
+    bid_with_costs(one, mixed, open_line, 500.0, freight=9000, rows=[("GST", 0)])
     db.expire_all()
-    again = engine.bid_window(db, mixed, capped, vendors[0].id).max_allowed
-    check("the price offered on the capped item does not move when the open one is priced",
-          close(offered, again), f"{offered} -> {again}")
-    bid(one, mixed, capped, again)
-    bid(one, mixed, open_line, 100.0)
-    db.expire_all()
-    placed = engine.vendor_best(db, capped.id, vendors[0].id)
-    check("...and a bid accepted under the ceiling stays under it",
-          placed is not None and engine.compare_price(placed) <= 100.0001,
-          engine.compare_price(placed) if placed else "no bid")
+    now = engine.compare_price(engine.vendor_best(db, capped.id, vendors[0].id))
+    check("...and pricing the open item, freight and all, does not touch it",
+          close(was, now), f"{was} -> {now}")
+    check("...so a bid accepted under the ceiling stays under it",
+          now <= 100.0001, now)
 
     print("   the minimum and maximum decrement cannot contradict each other")
     lock = make_auction(db, buyer, vendors, [(pens, unit, 10, 1000.0)], title="Locked",
@@ -560,13 +707,16 @@ def main() -> int:                                                   # noqa: C90
     db.commit()
     lline = lock.lines[0]
     bid(two, lock, lline, 1000.0)
-    set_taxes(one, lock, lline, [("GST", 18)])
     db.expire_all()
-    window = engine.bid_window(db, lock, lline, vendors[0].id)
+    # The window is worked out with the figures this bidder is about to type,
+    # because that is what their bid will be judged on.
+    window = engine.bid_window(db, lock, lline, vendors[0].id,
+                               charges=landed.Charges(),
+                               taxes=[quotes_mod.TaxRow("GST", 18.0)])
     check("the two bounds do not cross",
           window.max_allowed is None or window.min_allowed <= window.max_allowed,
           f"{window.min_allowed} .. {window.max_allowed}")
-    bid(one, lock, lline, window.max_allowed)
+    bid_with_costs(one, lock, lline, window.max_allowed, rows=[("GST", 18)])
     db.expire_all()
     check("...and the price the screen offers is accepted",
           engine.vendor_best(db, lline.id, vendors[0].id) is not None)
@@ -603,16 +753,17 @@ def main() -> int:                                                   # noqa: C90
     quiet = make_auction(db, buyer, vendors, [(pens, unit, 100, 200.0)], title="Quiet change",
                          min_dec=5.0)
     qline = quiet.lines[0]
-    set_charges(one, quiet, freight=1000)             # 10 a unit
-    bid(one, quiet, qline, 80.0)                      # 90 all in
-    bid(two, quiet, qline, 85.0)                      # 85, and the lead
+    placed = bid_with_costs(one, quiet, qline, 80.0, freight=1000, rows=[("GST", 0)])
+    bid_with_costs(two, quiet, qline, 85.0, freight=0, rows=[("GST", 0)])
     db.expire_all()
-    check("the second bidder leads to begin with",
+    check("the second bidder leads to begin with, on the all-in price",
           engine.best_bid(db, qline.id).vendor_id == vendors[1].id)
     before = db.query(EmailMessage).filter(EmailMessage.event == "outbid").count()
-    set_charges(one, quiet, freight=1)                # 0.01 a unit -> 80.01
+    # The same headline price, with the freight cut - a better offer, and it
+    # has to be made as a bid, where everyone can see it happen.
+    bid_with_costs(one, quiet, qline, 79.0, freight=1, rows=[("GST", 0)])
     db.expire_all()
-    check("cutting your own freight can take the lead without a bid",
+    check("a keener bid with less freight on it takes the lead",
           engine.best_bid(db, qline.id).vendor_id == vendors[0].id,
           engine.compare_price(engine.best_bid(db, qline.id)))
     mailer.flush(10)

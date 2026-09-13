@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from . import notify
 from .audit import record
 from .models import (Auction, AuctionLine, AuctionStatus, Award, Bid, DecrementType,
-                     Participant, User, Vendor)
+                     Participant, Quote, User, Vendor)
 from .utils import alias_for, fmt_money
 
 #: The smallest price anyone can bid. Below this there is nothing left to win.
@@ -184,14 +184,20 @@ def vendor_best(db: Session, line_id: int, vendor_id: int) -> Bid | None:
 
 
 def vendor_floor(db: Session, line_id: int, vendor_id: int) -> Bid | None:
-    """The lowest price this vendor has ever offered on the line.
+    """The lowest price this vendor is still offering on the line.
 
-    Withdrawn bids count here. Otherwise a bidder could withdraw a keen price
-    and then re-bid higher, walking their own offer back up - which is exactly
-    what "a new bid has to be lower than your own last bid" exists to stop.
+    A bid they have taken back does not count. Taking back the last thing you
+    typed is a correction, and the bid it reveals underneath - the one before
+    it - is the offer that stands; a new bid has to beat *that*. Counting the
+    withdrawn price would leave a bidder bound to a figure they are no longer
+    offering and nobody can accept.
+
+    Only the most recent submission can be taken back, and the buyer is told
+    when one is, so this cannot be used to walk an offer quietly back up.
     """
     own = (db.query(Bid)
-             .filter(Bid.line_id == line_id, Bid.vendor_id == vendor_id).all())
+             .filter(Bid.line_id == line_id, Bid.vendor_id == vendor_id,
+                     Bid.withdrawn.is_(False)).all())
     if not own:
         return None
     return sorted(own, key=lambda bid: (bid.unit_price, bid.created_at, bid.id))[0]
@@ -327,15 +333,24 @@ def decrement_value(auction: Auction, reference: float, amount: float) -> float:
 
 
 def bid_window(db: Session, auction: Auction, line: AuctionLine,
-               vendor_id: int | None = None) -> BidWindow:
+               vendor_id: int | None = None, charges=None, taxes=None) -> BidWindow:
     """What this bidder may offer on this line right now.
 
     Where delivered cost is being compared, the rules are applied to delivered
     prices and then converted back into the price this particular bidder types
     - so two bidders with different freight see different numbers, which is
     the whole point of comparing that way.
+
+    ``charges`` and ``taxes`` are the figures arriving on the same form as the
+    price. They have to be used rather than whatever is stored, or the check
+    would be made against the bidder's *last* delivery costs while they are
+    typing new ones.
     """
-    adders = adders_for(db, auction, line, vendor_id)
+    if charges is not None or taxes is not None:
+        from . import landed as _landed
+        adders = _landed.adders_from(db, auction, line, vendor_id, charges, taxes)
+    else:
+        adders = adders_for(db, auction, line, vendor_id)
     landed = bool(auction.compare_landed)
     current = best_bid(db, line.id)
     # Naming the price to beat, or anything derived from it, would undo the
@@ -413,7 +428,21 @@ def _lock_auction(db: Session, auction_id: int) -> None:
 
 
 def place_bid(db: Session, auction: Auction, line: AuctionLine, user: User,
-              unit_price: float, note: str = "", ip: str = "") -> Bid:
+              unit_price: float, note: str = "", ip: str = "",
+              charges=None, taxes=None) -> Bid:
+    """One bid on one item - the price, and everything that goes with it.
+
+    ``charges`` and ``taxes`` are what the bidder typed on the same form as
+    the price. They are not optional extras: on an auction compared on the
+    delivered price a bid without them is not a comparable offer, so it is
+    refused. They arrive together and they are checked together, against the
+    ceiling and against the price to beat, before anything is written.
+
+    Left as ``None`` they mean "use whatever this bidder has already declared"
+    - the way the engine is called from the sample data and from tests of the
+    bidding rules themselves.
+    """
+    from . import landed as _landed
     if not user.vendor_id:
         raise BidError("Only vendor users can bid.")
     if unit_price is None or not math.isfinite(unit_price) or unit_price <= 0:
@@ -421,6 +450,12 @@ def place_bid(db: Session, auction: Auction, line: AuctionLine, user: User,
     if unit_price > 1e12:
         raise BidError("That price is too large to be real. Check for an extra digit.")
     unit_price = round(float(unit_price), 2)
+    submitted = charges is not None or taxes is not None
+    if submitted and auction.compare_landed and not taxes:
+        raise BidError(
+            "Say what tax you charge on this item before you bid. If there is none, "
+            "type 0 — a bid with the tax left out is not comparable with one that "
+            "has it in.")
 
     with _line_lock(line.id):
         _lock_auction(db, auction.id)
@@ -437,7 +472,8 @@ def place_bid(db: Session, auction: Auction, line: AuctionLine, user: User,
                                                vendor_id=user.vendor_id).first():
             raise BidError("You are not on the invited bidder list for this auction.")
 
-        window = bid_window(db, auction, line, user.vendor_id)
+        window = bid_window(db, auction, line, user.vendor_id,
+                            charges=charges, taxes=taxes)
         previous_best = best_bid(db, line.id)
         ceiling = round(line.starting_price, 2) if line.has_ceiling else None
         adders = window.adders
@@ -453,11 +489,29 @@ def place_bid(db: Session, auction: Auction, line: AuctionLine, user: User,
         # high": telling a bidder whose own freight exceeds the ceiling to try
         # a lower number would send them round in circles.
         if window.exhausted:
-            if window.landed and adders.any and window.reference_is_ceiling:
+            # Whose fault it is matters. If this bidder's own costs are larger
+            # than the price they would have to beat, telling them to bid
+            # lower sends them round in circles - it is the costs that have to
+            # change, or the item is not one they can quote for.
+            own_costs_too_big = (window.landed and adders.any
+                                 and window.reference is not None
+                                 and adders.landed(MIN_PRICE) > window.reference)
+            if own_costs_too_big and window.reference_is_ceiling:
                 raise BidError(
                     f"Your delivered costs ({adders.describe()}) already use up the whole "
                     f"starting price of {fmt_money(window.reference)}, so there is no price "
                     "you could offer. Ask the buyer to look at this item.")
+            if own_costs_too_big and window.blind:
+                raise BidError(
+                    f"Your delivered costs ({adders.describe()}) come to more on this item "
+                    "than the price you would have to beat, so there is no price you could "
+                    "offer. It is the costs that would have to change.")
+            if own_costs_too_big:
+                raise BidError(
+                    f"Your delivered costs ({adders.describe()}) come to more than the best "
+                    f"bid of {fmt_money(window.reference)} on their own, so there is no "
+                    "price you could offer on this item. It is the costs that would have to "
+                    "change, not the price.")
             if window.blind:
                 raise BidError(
                     "Bidding on this item has gone as far as it can — there is no price "
@@ -512,28 +566,45 @@ def place_bid(db: Session, auction: Auction, line: AuctionLine, user: User,
 
         own = vendor_floor(db, line.id, user.vendor_id)
         if own and unit_price >= own.unit_price:
-            if own.withdrawn:
-                raise BidError(
-                    f"You bid {fmt_money(own.unit_price)} on this item earlier and withdrew "
-                    "it. A new bid still has to be lower than that — withdrawing a bid does "
-                    "not let you offer a higher price. Speak to the buyer if that price was "
-                    "a mistake.")
             raise BidError(f"You have already bid {fmt_money(own.unit_price)} on this item. "
                            "A new bid has to be lower than your own last bid.")
 
+        # Every bid is recorded as a submission: the price, the delivery costs
+        # and the taxes, as one thing, with the moment it was made. That is
+        # what the bidder is shown afterwards, and what they take back if they
+        # take anything back - so there is always one, however the bid arrived.
+        quote = Quote(auction_id=auction.id, vendor_id=user.vendor_id,
+                      user_id=user.id, scope="line", line_id=line.id,
+                      freight=(charges.freight if charges else 0.0),
+                      packaging=(charges.packaging if charges else 0.0),
+                      other=(charges.other if charges else 0.0),
+                      other_label=(charges.other_label if charges else ""),
+                      note=note[:400])
+        db.add(quote)
+        db.flush()
+        if submitted and auction.compare_landed:
+            _landed.save_line_taxes(db, auction, line, user.vendor_id, taxes or [],
+                                    quote_id=quote.id)
         bid = Bid(auction_id=auction.id, line_id=line.id, vendor_id=user.vendor_id,
                   user_id=user.id, unit_price=unit_price, qty=line.qty,
                   total=round(unit_price * line.qty, 2),
-                  landed_unit_price=landed_price, note=note[:400])
+                  landed_unit_price=landed_price, note=note[:400],
+                  quote_id=quote.id,
+                  freight=(charges.freight if charges else 0.0),
+                  packaging=(charges.packaging if charges else 0.0),
+                  other=(charges.other if charges else 0.0),
+                  other_label=(charges.other_label if charges else ""))
         db.add(bid)
         db.flush()
         # Pricing another item changes how this bidder's freight is shared
         # out, so every one of their delivered prices is worked out again -
         # including this one, which is what the board will rank on.
-        from . import landed as _landed
         _landed.reprice_vendor(db, auction, user.vendor_id)
         landed_price = bid.landed_unit_price
         offered = landed_price if window.landed else unit_price
+        quote.total_all_in = round(landed_price * float(line.qty or 0.0), 2)
+        quote.detail = _landed.snapshot(db, auction, [(line, bid)], quote)
+        db.flush()
 
         label = line_label(line)
         detail = {"line": label, "unit_price": unit_price, "total": bid.total}

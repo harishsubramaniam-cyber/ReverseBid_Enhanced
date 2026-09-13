@@ -280,30 +280,37 @@ def run(browser, base, tmp, watch):                                # noqa: C901
     sup.wait_for_timeout(400)
     check("a fat-fingered price is accepted (it is legal, just painful)",
           "1.10" in sup.content(), sup.locator(".alert").first.inner_text()[:60])
-    sup.locator("summary:has-text('Your bids on this item')").first.click()
-    sup.wait_for_timeout(300)
-    rows = sup.locator("details:has-text('Your bids on this item') .mono.strong")
+    rows = sup.locator(".bid-record")
     check("their own bids are listed newest first, so the last one is on top",
-          rows.first.inner_text().strip().endswith("1.10"),
-          rows.first.inner_text().strip())
-    sup.locator("button:has-text('Withdraw')").first.click()
+          "1.10" in rows.first.inner_text(),
+          " ".join(rows.first.inner_text().split())[:80])
+    check("...with the moment it was placed, to the minute",
+          bool(re.search(r"\d{1,2}:\d{2}", rows.first.inner_text())),
+          " ".join(rows.first.inner_text().split())[:80])
+    check("...and only the newest one offers to be taken back",
+          sup.locator("button:has-text('Take back my last bid')").count() == 1)
+    sup.locator("button:has-text('Take back my last bid')").first.click()
     sup.wait_for_load_state("networkidle")
     sup.wait_for_timeout(500)
-    watch.note_page(sup, "after withdrawing")
-    check("they can withdraw it themselves",
-          "withdrawn" in sup.locator(".alert").first.inner_text().lower(),
-          sup.locator(".alert").first.inner_text()[:70])
-    check("...and the board goes back to the price that is really lowest",
-          "12.10" in sup.locator(".range-note").first.inner_text()
-          or "12.00" in sup.locator(".range-note").first.inner_text(),
-          " ".join(sup.locator(".range-note").first.inner_text().split())[:90])
+    watch.note_page(sup, "after taking back the last bid")
+    check("they can take back the bid they just placed",
+          "taken back" in sup.locator(".alert").first.inner_text().lower(),
+          sup.locator(".alert").first.inner_text()[:80])
+    check("...and the app says what stands now instead",
+          "stands again" in sup.locator(".alert").first.inner_text()
+          or "no bid standing" in sup.locator(".alert").first.inner_text(),
+          sup.locator(".alert").first.inner_text()[:90])
+    check("...the withdrawn bid is marked as such in their record",
+          "Withdrawn" in sup.locator(".bid-record").first.inner_text(),
+          " ".join(sup.locator(".bid-record").first.inner_text().split())[:70])
     sup.wait_for_timeout(300)
     sup.locator("input[name=unit_price]").first.fill("5.00")
     sup.locator("button:has-text('Place bid')").first.click()
     sup.wait_for_load_state("networkidle")
     sup.wait_for_timeout(400)
-    check("...but cannot then bid above what they withdrew",
-          "withdrew" in sup.content(), sup.locator(".alert").first.inner_text()[:90])
+    check("...and a new bid has to beat the one that stands again, not the one they took back",
+          "1.10" not in sup.locator(".alert").first.inner_text(),
+          sup.locator(".alert").first.inner_text()[:90])
 
     # ------------------------------------------------------------------ 8
     print("\n8. Asking the buyer a question")

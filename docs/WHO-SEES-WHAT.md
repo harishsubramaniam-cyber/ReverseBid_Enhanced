@@ -28,8 +28,10 @@ conversation, the audit trail, the reports and the outbox.
 
 **A supplier** sees an auction only if they were invited to it, and only once
 it has been published. On it they see the items, the buyer's documents, their
-own bid, their own delivery costs and taxes, their own documents, and their
-own conversation with the buyer. They never see another supplier's name,
+own bids — every one they have placed, with the prices, delivery costs and tax
+rates exactly as they typed them and the moment each went in — their own
+documents, and their own conversation with the buyer. They never see another
+supplier's name,
 email address, bid, delivery costs, documents or messages — not on the board,
 not on the refreshing panel behind it, not on any tab, and not in the page
 source. The audit trail is closed to them entirely: it names everybody.

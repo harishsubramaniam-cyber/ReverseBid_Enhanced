@@ -1,0 +1,87 @@
+{# Everything this bidder has offered on this auction, exactly as they offered
+   it. Not recalculated: the figures are the ones that were on screen at the
+   moment the bid went in, with the moment itself. #}
+{% if my_history %}
+<div class="line-card" id="my-bids">
+  <div class="line-head">
+    <span class="li-num"><svg style="width:15px;height:15px"><use href="#i-clock"/></svg></span>
+    <div class="grow"><h3>Your bids on this auction</h3>
+      <div class="muted small">Every bid you have placed, newest first — the prices and the
+        taxes exactly as you typed them, and the moment each one went in.</div></div>
+    <div class="price-tag"><div class="k">Bids placed</div>
+      <div class="v">{{ my_history|length }}</div></div>
+  </div>
+  <div class="line-body">
+    {% for row in my_history %}
+    {% set q = row.quote %}
+    <div class="bid-record {{ 'is-standing' if row.status == 'standing' }}">
+      <div class="bid-record-head">
+        <div>
+          <b>{{ 'Whole auction' if q.scope == 'auction' else (row.priced[0].item if row.priced else 'One item') }}</b>
+          <span class="pill {{ 'ok' if row.status == 'standing' else ('warn' if row.status == 'withdrawn' else '') }}"
+                style="text-transform:none">
+            {% if row.status == 'standing' %}Standing bid
+            {% elif row.status == 'withdrawn' %}Withdrawn
+            {% else %}Replaced by a later bid{% endif %}
+          </span>
+        </div>
+        <div class="muted small mono">{{ fmt_dt(q.created_at, true) }}</div>
+      </div>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Item</th><th class="num">Quantity</th><th class="num">Your price</th>
+          <th class="num">Line total</th>
+          {% if auction.compare_landed %}<th class="num">Delivery</th><th class="num">Tax</th>
+          <th class="num">All in</th>{% endif %}</tr></thead>
+        <tbody>
+        {% for item in row.priced %}
+          <tr>
+            <td>{{ item.item }}</td>
+            <td class="num mono">{{ fmt_qty(item.qty) }} {{ item.unit }}</td>
+            <td class="num mono strong">{{ fmt_money(item.unit_price) }}</td>
+            <td class="num mono">{{ fmt_money(item.bare_total) }}</td>
+            {% if auction.compare_landed %}
+            <td class="num mono muted small">{{ fmt_money(item.delivery) }}</td>
+            <td class="num mono muted small">
+              {% if item.taxes %}{{ fmt_money(item.tax_total) }}
+                <div class="tiny">{% for tax in item.taxes %}{{ tax.name }} {{ '%g'|format(tax.percent) }}%{% if not loop.last %} + {% endif %}{% endfor %}</div>
+              {% else %}—{% endif %}</td>
+            <td class="num mono strong">{{ fmt_money(item.all_in_total) }}</td>
+            {% endif %}
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+
+      <div class="bid-record-foot">
+        {% if auction.compare_landed and row.charges and row.charges.total %}
+        <span class="muted small">Delivery costs quoted{{ ' for the whole auction' if q.scope == 'auction' else ' for this item' }}:
+          freight {{ fmt_money(row.charges.freight) }},
+          packaging {{ fmt_money(row.charges.packaging) }},
+          {{ row.charges.other_label or 'other' }} {{ fmt_money(row.charges.other) }}
+          — <b>{{ fmt_money(row.charges.total) }}</b></span>
+        {% elif auction.compare_landed %}
+        <span class="muted small">You quoted no delivery costs on this bid.</span>
+        {% endif %}
+        <span class="strong">Total {{ 'all in' if auction.compare_landed else '' }}:
+          {{ fmt_money(row.total_all_in) }}</span>
+      </div>
+
+      {% if q.withdrawn %}
+      <p class="muted small">Taken back {{ fmt_dt(q.withdrawn_at, true) }}{% if q.withdraw_reason %} — “{{ q.withdraw_reason }}”{% endif %}.</p>
+      {% endif %}
+
+      {% if row.can_withdraw %}
+      <form method="post" action="/auctions/{{ auction.id }}/withdraw-last" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="text" name="reason" maxlength="200" placeholder="Why, briefly (optional)"
+               aria-label="Reason">
+        <button class="btn ghost sm" type="submit">Take back my last bid</button>
+        <span class="muted small">Only this one — the bid you placed before it stands again.</span>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}

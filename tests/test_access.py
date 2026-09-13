@@ -152,12 +152,15 @@ def part_one():
     nobody = anonymous()
 
     # Something worth stealing.
+    # A bid carries its price, its delivery costs and its taxes together.
     one.post(f"/auctions/{auction.id}/bid",
-             data={"line_id": str(line.id), "unit_price": "4000"}, follow_redirects=False)
+             data={"line_id": str(line.id), "unit_price": "4000", "freight": "1000",
+                   "packaging": "0", "other": "", "tax_name": "GST", "tax_percent": "0"},
+             follow_redirects=False)
     two.post(f"/auctions/{auction.id}/bid",
-             data={"line_id": str(line.id), "unit_price": "3900"}, follow_redirects=False)
-    one.post(f"/auctions/{auction.id}/charges",
-             data={"freight": "1000", "packaging": "0", "other": "0"}, follow_redirects=False)
+             data={"line_id": str(line.id), "unit_price": "3900", "freight": "500",
+                   "packaging": "0", "other": "", "tax_name": "GST", "tax_percent": "0"},
+             follow_redirects=False)
     one.post(f"/auctions/{auction.id}/messages",
              data={"body": "Acme secret question"}, follow_redirects=False)
     boss.post(f"/auctions/{auction.id}/documents",
@@ -276,10 +279,12 @@ def part_one():
     print("\n28. Bidding into an auction you were not asked to")
     for label, url, data in [
         ("bid", f"/auctions/{auction.id}/bid",
-         {"line_id": str(line.id), "unit_price": "1"}),
-        ("quote delivery costs", f"/auctions/{auction.id}/charges", {"freight": "1"}),
-        ("declare taxes", f"/auctions/{auction.id}/lines/{line.id}/taxes",
-         {"tax_name": "GST", "tax_percent": "18"}),
+         {"line_id": str(line.id), "unit_price": "1", "freight": "1",
+          "tax_name": "GST", "tax_percent": "18"}),
+        ("bid for the whole auction", f"/auctions/{auction.id}/bid-all",
+         {f"price_{line.id}": "1", "freight": "1",
+          f"tax_name_{line.id}": "GST", f"tax_percent_{line.id}": "18"}),
+        ("take back a bid", f"/auctions/{auction.id}/withdraw-last", {"reason": "x"}),
     ]:
         response = their_supplier.post(url, data=data, follow_redirects=False)
         db.expire_all()
@@ -291,7 +296,8 @@ def part_one():
                                                   vendor_id=g_vendors[0].id).count() == 0,
               response.status_code)
     outsider.post(f"/auctions/{auction.id}/bid",
-                  data={"line_id": str(line.id), "unit_price": "1"}, follow_redirects=False)
+                  data={"line_id": str(line.id), "unit_price": "1", "freight": "0",
+                        "tax_name": "GST", "tax_percent": "0"}, follow_redirects=False)
     db.expire_all()
     check("an uninvited supplier here cannot bid either",
           db.query(Bid).filter_by(auction_id=auction.id,
@@ -569,16 +575,15 @@ def part_three():
 
     print("\n43. One bidder's costs are their own")
     auction, line = live_auction(db, org, buyer, unit, item, vendors, "RIV-1")
-    one.post(f"/auctions/{auction.id}/charges",
-             data={"freight": "7777", "packaging": "0", "other": "0"}, follow_redirects=False)
-    two.post(f"/auctions/{auction.id}/charges",
-             data={"freight": "2222", "packaging": "0", "other": "0"}, follow_redirects=False)
-    one.post(f"/auctions/{auction.id}/lines/{line.id}/taxes",
-             data={"tax_name": "GST", "tax_percent": "18"}, follow_redirects=False)
+    # Each bidder's costs and taxes arrive on their own bid.
     one.post(f"/auctions/{auction.id}/bid",
-             data={"line_id": str(line.id), "unit_price": "4000"}, follow_redirects=False)
+             data={"line_id": str(line.id), "unit_price": "4000", "freight": "7777",
+                   "packaging": "0", "other": "", "tax_name": "GST", "tax_percent": "18"},
+             follow_redirects=False)
     two.post(f"/auctions/{auction.id}/bid",
-             data={"line_id": str(line.id), "unit_price": "3900"}, follow_redirects=False)
+             data={"line_id": str(line.id), "unit_price": "3900", "freight": "2222",
+                   "packaging": "0", "other": "", "tax_name": "GST", "tax_percent": "0"},
+             follow_redirects=False)
     page = two.get(f"/auctions/{auction.id}").text
     check("a bidder never sees a rival's freight", "7,777" not in page and "7777" not in page)
     check("...but does see their own", "2,222" in page)

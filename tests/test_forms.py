@@ -43,6 +43,12 @@ from app.models import (Attachment, Auction, AuctionStatus, Bid,  # noqa: E402
                         EmailMessage, Item, LineTax, Message, Organisation,
                         Role, Unit, User, Vendor)
 from app.security import hash_password                          # noqa: E402
+
+
+def engine_best(db, line_id):
+    from app import engine
+    best = engine.best_bid(db, line_id)
+    return best.unit_price if best else None
 from app.utils import fmt_dt, fmt_money, fmt_qty, to_local_string   # noqa: E402
 
 Base.metadata.create_all(bind=db_engine)
@@ -446,33 +452,50 @@ def main():                                      # noqa: C901 - one long story
     check("the delivered-price auction is scheduled",
           landed_auction.status == AuctionStatus.SCHEDULED and landed_auction.compare_landed)
     first_line = landed_auction.lines[0]
-    r = supplier.post(f"/auctions/{landed_auction.id}/charges",
-                      data={"freight": "1000", "packaging": "200", "other": "0"},
+    # Bidding opens when the auction does, so bring it forward and let the
+    # bidder put in the one thing that carries costs and taxes: a bid.
+    db.query(Auction).filter_by(id=landed_auction.id).update(
+        {"status": AuctionStatus.LIVE,
+         "start_at": datetime.utcnow() - timedelta(minutes=1)})
+    db.commit()
+    db.refresh(landed_auction)
+    r = supplier.post(f"/auctions/{landed_auction.id}/bid",
+                      data={"line_id": str(first_line.id), "unit_price": "30",
+                            "freight": "400", "packaging": "100", "other": "",
+                            "tax_name": "GST", "tax_percent": "18"},
                       follow_redirects=False)
-    check("a bidder can quote delivery costs before it opens", "Saved" in said(r), said(r)[:60])
-    r = supplier.post(f"/auctions/{landed_auction.id}/lines/{first_line.id}/taxes",
-                      data={"tax_name": "GST", "tax_percent": "18"}, follow_redirects=False)
+    check("a bidder's costs and taxes arrive with their bid", "Bid placed" in said(r)
+          or "L1" in said(r), said(r)[:70])
     db.expire_all()
-    check("...and declare taxes", db.query(LineTax).count() == 1, said(r)[:60])
+    check("...and the taxes are recorded against that item",
+          db.query(LineTax).filter_by(line_id=first_line.id).count() == 1, said(r)[:60])
     # Now the buyer changes the items underneath them.
     landed_data["title"] = "Landed edit"
     landed_data["line_qty"] = ["50", "10"]
-    r = boss.post(f"/auctions/{landed_auction.id}/edit", data=landed_data, follow_redirects=False)
+    r = boss.post(f"/auctions/{landed_auction.id}/edit", data=landed_data,
+                  follow_redirects=False)
     db.expire_all(); db.refresh(landed_auction)
-    check("the edit saves", landed_auction.lines[0].qty == 50.0, said(r)[:60])
+    # Bidding has started, so the items are settled - which is the point: the
+    # costs and taxes on a bid belong to the item the bid was made against.
+    check("editing is refused once a bid is in", landed_auction.lines[0].qty == 100.0,
+          said(r)[:70])
     r = supplier.get(f"/auctions/{landed_auction.id}")
     check("...the bidder's screen still opens", r.status_code == 200, r.status_code)
     kept_line = db.get(Auction, landed_auction.id).lines[0]
-    check("...and the taxes they had already declared are still on that item",
+    check("...and the taxes they declared are still on that item",
           db.query(LineTax).filter_by(line_id=kept_line.id).count() == 1,
           db.query(LineTax).count())
-    check("...their delivery costs are still theirs", "1,000" in r.text or "1,200" in r.text)
-    new_line = db.get(Auction, landed_auction.id).lines[0]
-    r = supplier.post(f"/auctions/{landed_auction.id}/lines/{new_line.id}/taxes",
-                      data={"tax_name": "GST", "tax_percent": "18"}, follow_redirects=False)
+    check("...their bid shows the costs they quoted with it",
+          "400" in r.text and "500" in r.text)
+    r = supplier.post(f"/auctions/{landed_auction.id}/bid",
+                      data={"line_id": str(kept_line.id), "unit_price": "28",
+                            "freight": "300", "packaging": "100", "other": "",
+                            "tax_name": "GST", "tax_percent": "18"},
+                      follow_redirects=False)
     db.expire_all()
-    check("...and they can declare taxes again on the new line",
-          db.query(LineTax).filter_by(line_id=new_line.id).count() == 1, said(r)[:60])
+    check("...and a fresh bid replaces both the price and the costs",
+          db.query(LineTax).filter_by(line_id=kept_line.id).count() == 1
+          and engine_best(db, kept_line.id) == 28.0, said(r)[:60])
     orphans = db.query(LineTax).filter(
         ~LineTax.line_id.in_([l.id for l in db.get(Auction, landed_auction.id).lines])).count()
     check("...with nothing left pointing at an item that no longer exists", orphans == 0,
