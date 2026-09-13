@@ -285,8 +285,12 @@ def main() -> int:
     check("a bidder never sees another bidder's name", "Vendor 3" not in page)
     check("a bidder does see the current lowest price", "970" in page)
     check("a bidder sees the quantity they are pricing", "100" in page)
+    # This auction was created with the names hidden from the buyer, so until
+    # it is awarded the buyer gets the same aliases the bidders are known by.
     buyer_page = buyer_c.get(f"/auctions/{auction.id}").text
-    check("the buyer sees real bidder names", "Vendor 3" in buyer_page)
+    check("the buyer does not see bidder names while the auction is running",
+          "Vendor 3" not in buyer_page)
+    check("...they see the aliases instead", "Bidder A" in buyer_page)
 
     # ------------------------------------------------------------------ 7
     print("\n7. Withdraw, conversation, auto-extension")
@@ -351,6 +355,8 @@ def main() -> int:
           len({a.vendor_id for a in awards}) >= 1)
     db.refresh(auction)
     check("the auction is marked awarded", auction.status == AuctionStatus.AWARDED)
+    check("...and awarding gives the buyer the real names back",
+          "Vendor 3" in buyer_c.get(f"/auctions/{auction.id}").text)
 
     r = buyer_c.post(f"/auctions/{auction.id}/award", follow_redirects=False,
                      data={f"winner_{priced.id}": "", f"winner_{open_line.id}": ""})

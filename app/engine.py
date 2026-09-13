@@ -244,12 +244,62 @@ def alias_map(db: Session, auction: Auction) -> dict[int, str]:
     return out
 
 
+def blind_to_buyer(auction: Auction) -> bool:
+    """Are the bidders' names being kept from the buyer at this moment?
+
+    The buyer chooses this when they create the auction, so that the winner is
+    picked on the figures and nothing else - not on who the buyer would rather
+    deal with. It lifts the moment the auction is **awarded**, because then the
+    order has to go to somebody by name and the decision it was protecting has
+    already been made.
+
+    It does not lift when bidding merely closes: that is exactly when the
+    decision is taken. Nor does cancelling lift it, or the setting would be a
+    formality - cancel, read the names, run it again.
+    """
+    return bool(auction.hide_bidder_names and auction.status != AuctionStatus.AWARDED)
+
+
 def display_name(db: Session, auction: Auction, vendor: Vendor, viewer: User) -> str:
-    if not auction.hide_bidder_names or viewer.is_buyer_side:
+    """What this viewer is allowed to call this bidder, on this auction."""
+    if viewer.vendor_id and viewer.vendor_id == vendor.id:
+        return f"{vendor.name} (you)"            # nobody is anonymous to themselves
+    if viewer.is_buyer_side:
+        if blind_to_buyer(auction):
+            return alias_map(db, auction).get(vendor.id, "Bidder")
         return vendor.name
-    if viewer.vendor_id == vendor.id:
-        return f"{vendor.name} (you)"
+    # One bidder looking at another: never by name, whatever the setting says.
     return alias_map(db, auction).get(vendor.id, "Bidder")
+
+
+def naming(db: Session, auction: Auction, viewer: User) -> dict:
+    """Everything a page needs to name bidders on this auction.
+
+    One helper so that no screen has to remember the rule for itself. A
+    template that prints ``vendor.name`` directly is a hole in the blind, and
+    ``tests/test_access.py`` goes looking for them.
+    """
+    blind = blind_to_buyer(auction)
+    aliases = alias_map(db, auction)
+    vendors = {part.vendor_id: part.vendor for part in auction.participants}
+
+    def named(vendor) -> str:
+        return display_name(db, auction, vendor, viewer) if vendor else "A bidder"
+
+    def by_id(vendor_id) -> str:
+        vendor = vendors.get(vendor_id)
+        return named(vendor) if vendor else aliases.get(vendor_id, "A bidder")
+
+    return {
+        "aliases": aliases,
+        "display_name": named,
+        "bidder_label": by_id,
+        #: True only for the buyer's own screens, and only while it applies.
+        #: Templates use it to drop anything that would give the game away -
+        #: an alias sitting next to a real name, an email address, a file the
+        #: supplier named after themselves.
+        "blind_bidders": blind and viewer.is_buyer_side,
+    }
 
 
 def line_baseline(db: Session, line: AuctionLine) -> float:

@@ -195,6 +195,12 @@ class Auction(Base):
     max_decrement = Column(Float, default=0.0)         # 0 = no cap
     show_rank = Column(Boolean, default=True)
     show_lowest_bid = Column(Boolean, default=True)
+    #: Keep the bidders' names from the BUYER until the auction is awarded, so
+    #: the winner is picked on the figures alone. The buyer sees "Bidder A",
+    #: "Bidder B" against every bid, document, message and audit entry until
+    #: they award, and the real names then come back everywhere at once.
+    #: (Bidders never see each other by name, whatever this says.) The column
+    #: keeps its old name because installations in the field hold its value.
     hide_bidder_names = Column(Boolean, default=True)
     #: Compare bidders on their DELIVERED price - each bidder's own freight,
     #: duty and packaging added to what they bid. Off by default, so an

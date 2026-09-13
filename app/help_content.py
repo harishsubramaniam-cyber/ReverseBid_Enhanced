@@ -23,7 +23,7 @@ FIELD_HELP = {
     "max_decrement": "The biggest drop allowed in one bid. Leave it at 0 if you don't want a limit.",
     "show_rank": "Let bidders see their position — L1 is the lowest price, L2 is second lowest, and so on.",
     "show_lowest_bid": "Let bidders see the current lowest price. It usually pushes prices down faster.",
-    "hide_bidder_names": "Bidders see each other as “Bidder A”, “Bidder B” instead of by name. You always see the real names.",
+    "hide_bidder_names": "To avoid bias, the bidder names are hidden from the buyer until the award is complete. While the auction is running you see “Bidder A”, “Bidder B” against every bid, so the winner is chosen on the figures alone. The real names come back the moment you award. (Bidders never see each other by name either way.)",
     "auto_extend": "If a bid lands in the last few seconds, add more time. It stops someone winning by bidding at the buzzer.",
     "extend_trigger_seconds": "A bid inside this window triggers extra time.",
     "extend_by_seconds": "How much extra time each extension adds.",
@@ -206,9 +206,13 @@ ANSWERS = [
      "If a bid arrives in the final moments, the clock is automatically pushed back by a few "
      "minutes so the other bidders can respond. You set the trigger window, the extra time, and "
      "how many times it can happen."),
-    (["hidden", "anonymous", "names"],
-     "With hidden names switched on, bidders see each other as “Bidder A”, “Bidder B” and so on. "
-     "As the buyer you always see the real company names."),
+    (["hidden", "anonymous", "names", "blind", "bias"],
+     "**Hide bidder names from Buyer** keeps the names from *you* until the auction is awarded, "
+     "so the winner is picked on the figures and nothing else. While it is on, every bid, "
+     "document, message, audit entry, report and email alert says “Bidder A”, “Bidder B” — the "
+     "invited list still tells you which companies are in the auction, but not which is which. "
+     "Award the auction and the real names come back everywhere at once. Bidders never see each "
+     "other by name, whichever way this is set."),
     (["award", "winner", "give the business", "split", "share between"],
      "Once bidding closes, open the **Award** screen. Every item is pre-set to its lowest bidder. "
      "You can change who wins any item, change the price, or leave an item unawarded — and one "

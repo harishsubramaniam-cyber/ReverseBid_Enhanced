@@ -132,8 +132,20 @@ def auction_summary_report(db: Session, auction: Auction) -> dict:
             "highest": result["highest"], "lowest": result["lowest"],
             "baseline": engine.line_baseline(db, line),
         })
+    # The report is the one document that names every bidder against every bid
+    # they placed. While the buyer is being kept from the names, it has to
+    # speak in aliases too - on the screen and in what it downloads.
+    blind = engine.blind_to_buyer(auction)
+    aliases = engine.alias_map(db, auction)
+
+    def bidder_name(vendor) -> str:
+        if vendor is None:
+            return "—"
+        return aliases.get(vendor.id, "A bidder") if blind else vendor.name
+
     return {"auction": auction, "summary": summary, "lines": lines,
-            "awards": summary["awards"]}
+            "awards": summary["awards"], "blind_bidders": blind,
+            "bidder_name": bidder_name}
 
 
 # ------------------------------------------------------------------ CSV
@@ -162,6 +174,7 @@ def savings_csv(data: dict) -> bytes:
 
 def auction_csv(db: Session, data: dict) -> bytes:
     auction = data["auction"]
+    bidder_name = data["bidder_name"]
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow([f"{config.APP_NAME} — Auction Summary"])
@@ -186,7 +199,7 @@ def auction_csv(db: Session, data: dict) -> bytes:
             f"{entry['highest'].unit_price:.2f}" if entry["highest"] else "",
             f"{entry['lowest'].unit_price:.2f}" if entry["lowest"] else "",
             f"{entry['result']['savings']:.2f}", entry["result"]["basis"],
-            "; ".join(a.vendor.name for a in awards),
+            "; ".join(bidder_name(a.vendor) for a in awards),
             "; ".join(fmt_qty(a.qty) for a in awards),
             "; ".join(f"{a.unit_price:.2f}" for a in awards),
         ])
@@ -197,7 +210,8 @@ def auction_csv(db: Session, data: dict) -> bytes:
     for entry in data["lines"]:
         for bid in sorted(entry["history"], key=lambda b: b.created_at):
             any_bids = True
-            writer.writerow([fmt_dt(bid.created_at, False), entry["label"], bid.vendor.name,
+            writer.writerow([fmt_dt(bid.created_at, False), entry["label"],
+                             bidder_name(bid.vendor),
                              f"{bid.unit_price:.2f}", f"{bid.total:.2f}",
                              "yes" if bid.withdrawn else "no"])
     if not any_bids:
@@ -311,6 +325,7 @@ def savings_pdf(data: dict) -> bytes:
 
 
 def auction_pdf(data: dict) -> bytes:
+    bidder_name = data["bidder_name"]
     buffer = io.BytesIO()
     doc = _document(buffer)
     st = _styles()
@@ -356,7 +371,8 @@ def auction_pdf(data: dict) -> bytes:
             Paragraph(fmt_money(entry["lowest"].unit_price, False) if entry["lowest"]
                       else "—", st["right"]),
             Paragraph(fmt_money(entry["result"]["savings"], False), st["right"]),
-            Paragraph("<br/>".join(safe(a.vendor.name) for a in awards) or "—", st["cell"]),
+            Paragraph("<br/>".join(safe(bidder_name(a.vendor)) for a in awards) or "—",
+                      st["cell"]),
             Paragraph("<br/>".join(fmt_qty(a.qty) for a in awards) or "—", st["right"]),
             Paragraph("<br/>".join(fmt_money(a.unit_price, False) for a in awards) or "—",
                       st["right"]),
@@ -370,7 +386,7 @@ def auction_pdf(data: dict) -> bytes:
     for bid, label in sorted(all_bids, key=lambda pair: pair[0].created_at):
         bid_rows.append([Paragraph(fmt_dt(bid.created_at, False), st["cell"]),
                          Paragraph(safe(label), st["cell"]),
-                         Paragraph(safe(bid.vendor.name), st["cell"]),
+                         Paragraph(safe(bidder_name(bid.vendor)), st["cell"]),
                          Paragraph(fmt_money(bid.unit_price, False), st["right"]),
                          Paragraph(fmt_money(bid.total, False), st["right"]),
                          "Withdrawn" if bid.withdrawn else "Live"])

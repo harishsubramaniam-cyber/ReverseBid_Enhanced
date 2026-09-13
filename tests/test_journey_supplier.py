@@ -63,6 +63,10 @@ def build_auction(buyer, base, tmp):
     boxes = buyer.locator("#vendor-list input[type=checkbox]")
     for index in range(boxes.count()):
         boxes.nth(index).check()
+    # This journey follows the supplier, and the buyer-side checks in it are
+    # about attribution - whose message, whose certificate. So it is run with
+    # the buyer's blind off; the blind has a journey and a suite of its own.
+    buyer.uncheck("input[name=hide_bidder_names]")
     buyer.fill("#min_decrement", "0.10")
     buyer.fill("#start_at", local_time(-1))
     buyer.fill("#end_at", local_time(240))

@@ -467,7 +467,7 @@ button.working{opacity:.62; cursor:progress}
 .charges-form .row > div{flex:1; min-width:180px}
 .tax-box{margin-top:14px}
 .tax-row{display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap}
-.tax-row input[name^=tax_name]{flex:1.6; min-width:110px}
+.tax-row input[name^=tax_name]{flex:2.4 1 180px; min-width:180px}
 .tax-row input[name^=tax_percent]{flex:0 0 92px; text-align:right}
 .tax-row .pct{color:var(--ink-3); margin-left:-4px}
 .tax-row .tax-amount{flex:1; min-width:90px}

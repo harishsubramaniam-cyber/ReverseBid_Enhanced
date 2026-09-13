@@ -58,6 +58,12 @@ ITEMS = [("Ball pen, blue", "NOS"), ("Copier paper A4, 75 gsm", "BOX"),
 #: title, status, when it starts relative to now (hours), lines as
 #: (item index, quantity, ceiling price per unit), and the bids placed on it
 #: as (vendor index, line position, price per unit) in the order they came in.
+#: The one sample auction that shows the buyer's blind. While it runs, the
+#: buyer sees "Bidder A", "Bidder B" against every bid instead of the company
+#: name, so the winner is picked on the figures; awarding gives the names back.
+#: The rest are left open, so both behaviours can be seen side by side.
+BLIND_TITLES = {"Bearings — delivered price, item by item"}
+
 AUCTIONS = [
     ("Stationery — quarterly refill", AuctionStatus.DRAFT, 48,
      [(0, 5000, 18.0), (1, 400, 260.0)], []),
@@ -209,6 +215,7 @@ def build() -> None:
         auction = Auction(
             org_id=org.id, reference=f"RA-{number:04d}", title=title,
             compare_landed=delivered, award_mode=("basket" if whole else "line"),
+            hide_bidder_names=(title in BLIND_TITLES),
             description="Sample data, for trying the platform out.",
             creator_id=buyer.id, status=status, currency="INR",
             start_at=start, end_at=end, original_end_at=end,

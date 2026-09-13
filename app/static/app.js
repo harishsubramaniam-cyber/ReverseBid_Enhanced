@@ -54,29 +54,80 @@
     }, 4000);
   }
 
+  // Every box on the board gets a name that survives the redraw, whether or
+  // not it has an id. A bid form holds several boxes called "tax_name", so the
+  // key is the form it is in, the name, and which one of those it is.
+  function boardFields(root) {
+    var counts = {}, out = [];
+    $$("input, textarea, select", root).forEach(function (el) {
+      var type = (el.type || "").toLowerCase();
+      if (type === "hidden" || type === "submit" || type === "button") return;
+      var form = el.form;
+      var stem = (form ? (form.getAttribute("action") || form.id || "form") : "loose")
+                 + "|" + (el.name || el.id || type);
+      counts[stem] = (counts[stem] || 0) + 1;
+      out.push([stem + "#" + counts[stem], el]);
+    });
+    return out;
+  }
+
+  function taxBoxKey(box, index) {
+    return box.dataset.taxLine || ("box" + index);
+  }
+
   function swapBoard(html) {
-    // Keep what the person is doing: the focused field, the caret, and every
-    // price they have typed but not yet submitted.
+    // Keep what the person is doing. The board redraws itself every few
+    // seconds, and it must never take a half-typed word out from under
+    // somebody: anything they have changed by hand is put back exactly as it
+    // was, along with any extra tax rows they added and where the caret sat.
     var active = document.activeElement;
-    var focusedName = (active && board.contains(active)) ? active.id : null;
-    var caret = focusedName && active.selectionStart;
-    var typed = {};
-    $$("input, textarea", board).forEach(function (el) {
-      if (el.id && el.value) typed[el.id] = el.value;
+    var focused = null, caret = null;
+    var typed = {}, taxRows = {};
+    boardFields(board).forEach(function (pair) {
+      var key = pair[0], el = pair[1];
+      // Only what the person changed themselves. A box still holding what the
+      // server put there is left alone, so a fresh figure from the server
+      // still comes through.
+      if (el.type === "checkbox" || el.type === "radio") {
+        if (el.checked !== el.defaultChecked) typed[key] = el.checked;
+      } else if (el.value !== el.defaultValue) {
+        typed[key] = el.value;
+      }
+      if (el === active) {
+        focused = key;
+        try { caret = el.selectionStart; } catch (e) { /* not a text box */ }
+      }
+    });
+    $$(".tax-box", board).forEach(function (box, index) {
+      taxRows[taxBoxKey(box, index)] = box.querySelectorAll(".tax-row").length;
     });
 
     board.innerHTML = html;
 
-    $$("input, textarea", board).forEach(function (el) {
-      if (el.id && typed[el.id] !== undefined) {
-        el.value = typed[el.id];
-        // Tell the page the value is back, so the "that is X for all Y" hint
-        // under the price is redrawn instead of vanishing on every refresh.
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      }
+    // Rows the bidder added with "Add another tax" are not in what the server
+    // sent back, so put them there before anything is filled in.
+    $$(".tax-box", board).forEach(function (box, index) {
+      var want = taxRows[taxBoxKey(box, index)];
+      var rows = box.querySelector(".tax-rows");
+      if (!rows || !want) return;
+      while (rows.querySelectorAll(".tax-row").length < want) addTaxRow(rows);
     });
-    if (focusedName) {
-      var again = document.getElementById(focusedName);
+
+    var touched = [], again = null;
+    boardFields(board).forEach(function (pair) {
+      var key = pair[0], el = pair[1];
+      if (key === focused) again = el;
+      if (!(key in typed)) return;
+      if (el.type === "checkbox" || el.type === "radio") el.checked = typed[key];
+      else el.value = typed[key];
+      touched.push(el);
+    });
+    // Tell the page the values are back, so the "that is X for all Y" hint and
+    // the all-in total are redrawn instead of vanishing on every refresh.
+    touched.forEach(function (el) {
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    if (focused) {
       if (again) {
         again.focus();
         try { again.setSelectionRange(caret, caret); } catch (e) { /* not a text input */ }
@@ -522,20 +573,33 @@
     if (rows) paintTaxes(rows);
   });
 
+  // One more empty line in a tax editor. Shared with the board's refresh, so a
+  // row somebody added is still there after the page redraws itself.
+  function addTaxRow(rows) {
+    var last = rows.querySelector(".tax-row:last-child");
+    if (!last) return null;
+    var copy = last.cloneNode(true);
+    copy.querySelectorAll("input").forEach(function (input) {
+      input.value = "";
+      // cloneNode copies the value *attribute* as well, and that is what the
+      // refresh reads to tell a typed-in figure from a server-sent one. Clear
+      // both or the new row looks like something the server filled in.
+      input.removeAttribute("value");
+    });
+    var out = copy.querySelector(".tax-amount");
+    if (out) out.textContent = "";
+    rows.appendChild(copy);
+    return copy;
+  }
+
   document.addEventListener("click", function (e) {
     var add = e.target.closest ? e.target.closest("[data-add-tax]") : null;
     if (add) {
       // One form can hold a tax editor per item, so take the one this button
       // belongs to - not the first on the page.
       var scope = add.closest(".tax-box") || add.closest("form");
-      var rows = scope.querySelector(".tax-rows");
-      var last = rows.querySelector(".tax-row:last-child");
-      var copy = last.cloneNode(true);
-      copy.querySelectorAll("input").forEach(function (input) { input.value = ""; });
-      var out = copy.querySelector(".tax-amount");
-      if (out) out.textContent = "";
-      rows.appendChild(copy);
-      var name = copy.querySelector("input[name^=tax_name]");
+      var copy = addTaxRow(scope.querySelector(".tax-rows"));
+      var name = copy && copy.querySelector("input[name^=tax_name]");
       if (name) name.focus();
       return;
     }

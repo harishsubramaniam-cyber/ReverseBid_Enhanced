@@ -77,7 +77,7 @@
       {% if choice.best_whole %}
       <div class="v">{{ fmt_money(choice.best_whole.total) }}</div>
       <div class="muted small">Cheapest single supplier:
-        <b>{{ choice.best_whole.name }}</b></div>
+        <b>{{ display_name(choice.best_whole.vendor) }}</b></div>
       {% else %}
       <div class="v muted">—</div>
       <div class="muted small">Nobody priced every item, so no single supplier can take the
@@ -97,7 +97,7 @@
   {% if choice.best_whole %}
     {% if choice.same_answer %}
     <div class="alert ok small" style="margin-top:12px"><svg><use href="#i-tick"/></svg>
-      <div><b>The choice is free this time.</b> {{ choice.best_whole.name }} is best on every
+      <div><b>The choice is free this time.</b> {{ display_name(choice.best_whole.vendor) }} is best on every
       item, so one supplier costs exactly the same as splitting it. Give them the lot.</div></div>
     {% else %}
     <div class="alert {{ 'warn' if auction.award_mode == 'basket' else 'info' }} small"
@@ -132,7 +132,7 @@
     <tbody>
     {% for basket in choice.baskets %}
       <tr class="{{ 'is-pick' if choice.best_whole and basket.vendor_id == choice.best_whole.vendor_id }}">
-        <td class="strong">{{ basket.name }}</td>
+        <td class="strong">{{ display_name(basket.vendor) }}</td>
         <td class="num mono">{{ basket.lines }} of {{ choice.lines }}</td>
         <td class="num mono {{ 'strong' if basket.complete }}">
           {{ fmt_money(basket.total) }}</td>
@@ -227,7 +227,7 @@
           {% for entry in row.priced %}
             <tr class="{{ 'is-best' if entry.bid.vendor_id == row.chosen }}">
               <td><span class="rank {{ 'l1' if loop.index == 1 }}{{ 'l2' if loop.index == 2 }}{{ 'l3' if loop.index == 3 }}">L{{ loop.index }}</span></td>
-              <td class="strong">{{ entry.vendor.name }}
+              <td class="strong">{{ display_name(entry.vendor) }}
                 {% if bare and entry.bid.vendor_id == row.decided_leader %}
                 <div class="tiny" style="color:var(--good)">best all-in — the basis this is
                   awarded on</div>{% endif %}</td>

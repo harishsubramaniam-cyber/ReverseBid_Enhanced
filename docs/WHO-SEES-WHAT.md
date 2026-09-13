@@ -23,8 +23,9 @@ password, and neither can see the other's work.
 ## Inside one company
 
 **Buyers and admins** see everything their company owns: every auction, every
-bid with the real supplier name against it, every document, every
-conversation, the audit trail, the reports and the outbox.
+bid, every document, every conversation, the audit trail, the reports and the
+outbox. Whether the *names* are against the bids is the buyer's own choice —
+see **The buyer's blind** below.
 
 **A supplier** sees an auction only if they were invited to it, and only once
 it has been published. On it they see the items, the buyer's documents, their
@@ -40,6 +41,43 @@ A supplier can invite a colleague, and that invitation can only ever create
 another supplier login tied to the same supplier record. There is no form
 anywhere that promotes an account to the buyer's side.
 
+## The buyer's blind
+
+**Hide bidder names from Buyer**, set when the auction is created, keeps the
+bidders' names from the *buyer* until the auction is awarded. The point is
+bias: a buyer who can see which bid came from the supplier they play golf with
+is deciding on something other than the figures.
+
+While it is on, the buyer's own screens say "Bidder A", "Bidder B" — and that
+means all of them, because a blind with one hole in it is not a blind:
+
+| Where | What the buyer sees |
+| --- | --- |
+| The board, the standings, every-bid history | the alias against every bid |
+| The award screen, including "give them the lot" | the alias on every row and every button |
+| Documents a bidder attached | "from Bidder A" |
+| The conversation | each thread headed by the alias, replies too |
+| The history and audit trail | the alias in place of the person who acted |
+| The auction report, and its CSV and PDF | the alias in every row |
+| Email and in-app alerts to the buyer | the alias, never the company |
+| The Outbox | an email to a bidder on a blind auction is **sealed**: it shows that it went, when, and whether it arrived — not who to, and not what it said. A search on an address does not match it either. |
+
+The invited-bidder list still names the companies, because the buyer invited
+them and knows perfectly well who is in the auction. What it does not do is
+pair a name with an alias: the alias column is gone, the delivery figures are
+replaced by "quoted with their bid", and the list is put in name order, since
+the order they were invited in is the order the aliases were handed out in.
+
+**Awarding lifts it**, everywhere at once — the order has to go to somebody by
+name, and the decision the blind was protecting has been made. Closing bidding
+does not lift it: that is exactly when the decision is taken. Neither does
+cancelling, or the setting would be a formality.
+
+Two things it cannot do. A bidder who names their file `AlphaSupplies-quote.pdf`,
+or signs their message, has given themselves away — the platform says so on the
+documents tab rather than pretending otherwise. And an alert the buyer was sent
+while the blind was on keeps the wording it had when it was written.
+
 ## What the buyer chooses to publish
 
 Two settings on the auction decide how much of the contest bidders see:
@@ -48,6 +86,9 @@ Two settings on the auction decide how much of the contest bidders see:
 | --- | --- | --- |
 | **Bidders see their rank** | "You are at L2", the rank badge, the rank in the bid confirmation email | none of it, anywhere |
 | **Bidders see the lowest price** | the current lowest, and "your bid must be ₹X or less" | neither, and nothing worked out from them |
+
+(**Hide bidder names from Buyer** is the third setting on that screen, but it
+is about what the *buyer* sees, not the bidders — it is covered above.)
 
 Off means off. With the lowest price hidden, the board does not print the
 price to beat, the largest price the bidder may type, the suggestion chip, or

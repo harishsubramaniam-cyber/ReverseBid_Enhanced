@@ -95,13 +95,16 @@
 <div class="table-wrap"><table>
   <thead><tr><th>When</th><th>To</th><th>Subject</th><th>Event</th><th>Status</th><th></th></tr></thead><tbody>
   {% for m in rows %}
+    {% set shut = seal.sealed(m) %}
     <tr><td class="small">{{ fmt_dt(m.created_at, False) }}</td>
-      <td class="small">{{ m.to_name }}<div class="muted">{{ m.to_email }}</div></td>
-      <td><a href="/outbox/{{ m.id }}">{{ m.subject }}</a></td>
+      <td class="small">{% if shut %}<span class="muted">A bidder on this auction</span>
+          <div class="muted tiny">hidden until you award it</div>
+        {% else %}{{ m.to_name }}<div class="muted">{{ m.to_email }}</div>{% endif %}</td>
+      <td>{% if shut %}{{ m.subject }}{% else %}<a href="/outbox/{{ m.id }}">{{ m.subject }}</a>{% endif %}</td>
       <td><span class="pill closed">{{ m.event or '—' }}</span></td>
       <td><span class="pill {{ 'good' if m.status in ('sent','outbox') else ('warn' if m.status == 'queued' else 'bad') }}">{{ {'outbox': 'saved here', 'queued': 'going out…'}.get(m.status, m.status) }}</span>
         {% if m.error %}<div class="muted small">{{ m.error }}</div>{% endif %}</td>
-      <td><a class="btn ghost sm" href="/outbox/{{ m.id }}">Open</a></td></tr>
+      <td>{% if not shut %}<a class="btn ghost sm" href="/outbox/{{ m.id }}">Open</a>{% endif %}</td></tr>
   {% endfor %}
   {% if not rows %}<tr><td colspan="6" class="empty">
     {%- if q %}No emails match “{{ q }}”. <a href="/outbox">Show everything</a>.

@@ -464,9 +464,12 @@ def auction_cancelled(db: Session, auction: Auction, reason: str) -> int:
 def message_posted(db: Session, auction: Auction, recipients: list[User], sender: User,
                    body: str) -> int:
     preview = body if len(body) <= 160 else body[:157] + "…"
+    # A supplier writing to the buyer is announced the way the board announces
+    # them. Their own colleagues, and the buyer writing back, are named.
+    who = bidder_label(db, auction, sender.vendor) if sender.vendor_id else sender.name
     return send(db, recipients, event="message", auction=auction,
                 title=f"New message on {auction.reference}",
-                paragraphs=[para("<b>{who}</b> wrote:", who=sender.name),
+                paragraphs=[para("<b>{who}</b> wrote:", who=who),
                             para("<i>{text}</i>", text=preview)],
                 cta_text="Reply", link=f"/auctions/{auction.id}?tab=conversation#conversation")
 
@@ -506,12 +509,28 @@ def auction_changed(db: Session, auction: Auction, newly_invited: list[Vendor],
     return sent
 
 
+def bidder_label(db: Session, auction: Auction, vendor: Vendor | None) -> str:
+    """What the BUYER may call this bidder in an email about this auction.
+
+    An email outlives the screen it mirrors, so a mail that names a bidder the
+    board is calling "Bidder A" hands the buyer the very thing the auction was
+    set up to keep from them. Emails to the bidder's own people are not routed
+    through here - they know who they are.
+    """
+    from . import engine                       # circular at module load
+    if vendor is None:
+        return "A bidder"
+    if not engine.blind_to_buyer(auction):
+        return vendor.name
+    return engine.alias_map(db, auction).get(vendor.id, "A bidder")
+
+
 def bid_withdrawn(db: Session, auction: Auction, vendor: Vendor, line_label: str) -> int:
     return send(db, [auction.creator], event="withdrawn", auction=auction,
                 title=f"Bid withdrawn on {auction.reference}",
                 paragraphs=[para("<b>{who}</b> has withdrawn their bid on <b>{item}</b>. "
                                  "Ranks have been recalculated.",
-                                 who=vendor.name, item=line_label)],
+                                 who=bidder_label(db, auction, vendor), item=line_label)],
                 cta_text="View the auction", link=f"/auctions/{auction.id}")
 
 

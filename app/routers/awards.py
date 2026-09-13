@@ -106,10 +106,14 @@ def _award_screen(request: Request, db: Session, user: User, auction,
             "existing": existing, "best": ranked[0] if ranked else None,
             "chosen": chosen, "price": price, "note": note,
         })
-    bidders = sorted({(bid.vendor_id, bid.vendor.name)
+    names = engine.naming(db, auction, user)
+    # "Everything to X" needs a label the buyer is allowed to read, and an
+    # order that does not itself pair a company with its alias.
+    bidders = sorted({(bid.vendor_id, names["bidder_label"](bid.vendor_id))
                       for row in rows for bid in row["ranked"]}, key=lambda pair: pair[1])
     return render(request, "award.html",
                   {"auction": auction, "rows": rows, "bidders": bidders, "error": error,
+                   **names,
                    "summary": engine.auction_summary(db, auction),
                    # Both totals, every time. The buyer decided how to award
                    # this when they created it, but the figures only exist now
@@ -193,7 +197,10 @@ async def post_award(auction_id: int, request: Request, user: User = Depends(buy
                 raise ActionError(f"The bidder chosen for “{label}” no longer exists.")
             if not db.query(Participant).filter_by(auction_id=auction.id,
                                                    vendor_id=vendor.id).first():
-                raise ActionError(f"{vendor.name} was not invited to this auction, so they "
+                # Named as the buyer is allowed to know them: a refusal is no
+                # place to hand back the name the rest of the screen is hiding.
+                who = engine.naming(db, auction, user)["bidder_label"](vendor.id)
+                raise ActionError(f"{who} was not invited to this auction, so they "
                                   f"cannot be awarded “{label}”.")
             bid = engine.vendor_best(db, line.id, vendor.id)
 
@@ -208,7 +215,8 @@ async def post_award(auction_id: int, request: Request, user: User = Depends(buy
             elif bid:
                 price = bid.unit_price
             else:
-                raise ActionError(f"{vendor.name} did not bid on “{label}”, so there is no price "
+                who = engine.naming(db, auction, user)["bidder_label"](vendor.id)
+                raise ActionError(f"{who} did not bid on “{label}”, so there is no price "
                                   "to award at. Type one in, or leave that item unawarded.")
             # Round FIRST. Checking before rounding let a sub-paisa price such
             # as 0.004 through the "more than zero" guard and then stored it as

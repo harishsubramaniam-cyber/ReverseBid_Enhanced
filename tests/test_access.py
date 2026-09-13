@@ -115,14 +115,15 @@ def company(db, name, tag, suppliers=3):
 
 
 def live_auction(db, org, buyer, unit, item, vendors, ref, invited=2, landed=True,
-                 show_lowest=True, show_rank=True, ceiling=5000.0):
+                 show_lowest=True, show_rank=True, ceiling=5000.0, blind=True):
     now = datetime.utcnow()
     auction = Auction(reference=ref, title=f"{ref} pens", creator_id=buyer.id, org_id=org.id,
                       status=AuctionStatus.LIVE, start_at=now - timedelta(minutes=5),
                       end_at=now + timedelta(hours=2), original_end_at=now + timedelta(hours=2),
                       decrement_type=DecrementType.ABSOLUTE, min_decrement=0.0,
                       compare_landed=landed, auto_extend=False, published_at=now,
-                      show_lowest_bid=show_lowest, show_rank=show_rank)
+                      show_lowest_bid=show_lowest, show_rank=show_rank,
+                      hide_bidder_names=blind)
     db.add(auction)
     db.flush()
     db.add(AuctionLine(auction_id=auction.id, item_id=item.id, unit_id=unit.id, qty=100,
@@ -672,10 +673,180 @@ def part_three():
     db.close()
 
 
+
+# --------------------------------------------------------------------------
+# Part four: the buyer's blind
+# --------------------------------------------------------------------------
+def part_four():
+    """The buyer asked not to be told who is bidding until they award.
+
+    Every check here is an attempt to find the name anyway - on a page, in a
+    report, in a download, in the audit trail, in the Outbox, or by pairing an
+    alias with something only one bidder could have.
+    """
+    db = SessionLocal()
+    org, buyer, unit, item, vendors = company(db, "Blindside", "blind", suppliers=2)
+    boss, _ = login("buyer@blind.test")
+    one, _ = login("s0@blind.test")
+    two, _ = login("s1@blind.test")
+    alpha, bravo = vendors[0].name, vendors[1].name
+
+    print("\n49. A blind auction, seen from the buyer's chair")
+    auction, line = live_auction(db, org, buyer, unit, item, vendors, "BLIND-1", blind=True)
+    one.post(f"/auctions/{auction.id}/bid",
+             data={"line_id": str(line.id), "unit_price": "4000", "freight": "7777",
+                   "packaging": "0", "other": "", "tax_name": "GST", "tax_percent": "18"},
+             follow_redirects=False)
+    two.post(f"/auctions/{auction.id}/bid",
+             data={"line_id": str(line.id), "unit_price": "3900", "freight": "2222",
+                   "packaging": "0", "other": "", "tax_name": "GST", "tax_percent": "18"},
+             follow_redirects=False)
+    one.post(f"/auctions/{auction.id}/messages",
+             data={"body": "Can we deliver in two lots?"}, follow_redirects=False)
+    one.post(f"/auctions/{auction.id}/documents",
+             data={"kind": "vendor"},
+             files={"files": ("compliance.pdf", b"%PDF-1.4 anything", "application/pdf")},
+             follow_redirects=False)
+
+    board = boss.get(f"/auctions/{auction.id}").text
+    check("the board does not name a bidder", alpha not in board and bravo not in board)
+    check("...it uses the aliases", "Bidder 1" in board and "Bidder 2" in board)
+    check("...and the figures are all still there", "7,777" in board and "2,222" in board)
+
+    print("\n50. ...and every other tab the buyer can open")
+    for tab, what in (("details", "the invited-bidder list"),
+                      ("documents", "the documents tab"),
+                      ("conversation", "the conversation"),
+                      ("history", "the audit trail")):
+        page = boss.get(f"/auctions/{auction.id}?tab={tab}").text
+        if tab == "details":
+            # The buyer invited these companies, so the names belong here -
+            # what must not be here is which of them is which.
+            check(f"{what} still names who was invited", alpha in page and bravo in page)
+            check(f"...but never beside an alias, so the pairing is not given away",
+                  "Bidder 1" not in page and "Bidder 2" not in page)
+        else:
+            check(f"{what} does not name a bidder", alpha not in page and bravo not in page)
+    trail = boss.get(f"/auctions/{auction.id}?tab=history").text
+    check("the audit trail does not carry the bidder's person or address",
+          "s0@blind.test" not in trail and ">S0<" not in trail)
+    check("...but still says what happened", "bid.place" in trail)
+
+    print("\n51. The award screen, where the decision is actually made")
+    page = boss.get(f"/auctions/{auction.id}/award", follow_redirects=True).text
+    check("awarding before the close is still the only obstacle",
+          alpha not in page and bravo not in page)
+    auction.status = AuctionStatus.CLOSED
+    db.commit()
+    page = boss.get(f"/auctions/{auction.id}/award").text
+    check("the award screen names nobody", alpha not in page and bravo not in page)
+    check("...it offers the aliases to choose between", "Bidder" in page)
+    check("closing the bidding does not lift the blind — that is when it matters most",
+          alpha not in boss.get(f"/auctions/{auction.id}").text)
+
+    print("\n52. The report, and what it downloads")
+    page = boss.get(f"/reports/auction/{auction.id}").text
+    check("the report on screen names nobody", alpha not in page and bravo not in page)
+    csv_bytes = boss.get(f"/reports/auction/{auction.id}/export/csv").content
+    check("...nor does the CSV", alpha.encode() not in csv_bytes
+          and bravo.encode() not in csv_bytes)
+    check("...and it still carries the bids", b"4000.00" in csv_bytes)
+    pdf_bytes = boss.get(f"/reports/auction/{auction.id}/export/pdf").content
+    check("...nor the PDF", alpha.encode() not in pdf_bytes and bravo.encode() not in pdf_bytes)
+
+    print("\n53. The Outbox, which holds every letter the platform has sent")
+    db.expire_all()
+    letters = db.query(EmailMessage).filter(EmailMessage.auction_id == auction.id).all()
+    to_bidders = [m for m in letters if m.to_email == "s0@blind.test"]
+    check("emails did go to the bidders", bool(to_bidders), len(to_bidders))
+    page = boss.get("/outbox").text
+    check("the Outbox does not show a bidder's address on a blind auction",
+          "s0@blind.test" not in page)
+    check("...but does show that something went, and whether it arrived",
+          "A bidder on this auction" in page)
+    if to_bidders:
+        opened = boss.get(f"/outbox/{to_bidders[0].id}", follow_redirects=True)
+        check("opening one is refused, in words",
+              "s0@blind.test" not in opened.text and "hidden from you" in opened.text)
+        raw = boss.get(f"/outbox/{to_bidders[0].id}/raw")
+        check("...and the raw preview is not a way round it", raw.status_code == 404,
+              raw.status_code)
+    # The search box echoes back whatever was typed, so the address appears on
+    # the page either way. What must not happen is a row coming back: a hit
+    # would say this bidder is in this auction.
+    hunt = boss.get("/outbox?q=s0@blind.test").text
+    check("searching for a bidder's address returns no row on a blind auction",
+          "No emails match" in hunt and "/outbox/" not in hunt.split("Search subject")[-1],
+          hunt.count("/outbox/"))
+
+    print("\n54. ...but an invitation is not sealed, and nor is the buyer's own mail")
+    # Every invited bidder gets the same letter at the same moment, so reading
+    # one says nothing the buyer did not decide themselves - and "did my
+    # invitation actually go out?" has to stay answerable on a blind auction.
+    invitation = EmailMessage(org_id=org.id, auction_id=auction.id,
+                              to_email="s0@blind.test", to_name="S0",
+                              subject="You are invited to BLIND-1", event="invited",
+                              html_body="<p>Please bid.</p>", status="outbox")
+    db.add(invitation)
+    db.commit()
+    opened = boss.get(f"/outbox/{invitation.id}")
+    check("the buyer can still open an invitation they sent",
+          opened.status_code == 200, opened.status_code)
+    check("...and the Outbox lists it by address",
+          "s0@blind.test" in boss.get("/outbox").text)
+    check("...while the bid emails beside it stay sealed",
+          "A bidder on this auction" in boss.get("/outbox").text)
+
+    print("\n54b. A letter to the buyer's own side is not sealed")
+    ours = [m for m in letters if m.to_email == "buyer@blind.test"]
+    if ours:
+        mine = boss.get(f"/outbox/{ours[0].id}")
+        check("the buyer can still read their own mail", mine.status_code == 200,
+              mine.status_code)
+
+    print("\n55. Awarding gives the names back, everywhere at once")
+    db.expire_all()
+    best = db.query(Bid).filter_by(line_id=line.id).order_by(Bid.unit_price.asc()).first()
+    boss.post(f"/auctions/{auction.id}/award", follow_redirects=False,
+              data={f"winner_{line.id}": str(best.vendor_id),
+                    f"price_{line.id}": str(best.unit_price)})
+    db.expire_all()
+    db.refresh(auction)
+    check("the auction is awarded", auction.status == AuctionStatus.AWARDED)
+    board = boss.get(f"/auctions/{auction.id}").text
+    check("the board names the bidders now", alpha in board or bravo in board)
+    check("...so does the invited list, alias and all",
+          "Bidder 1" in boss.get(f"/auctions/{auction.id}?tab=details").text)
+    check("...and the report", alpha in boss.get(f"/reports/auction/{auction.id}").text
+          or bravo in boss.get(f"/reports/auction/{auction.id}").text)
+    page = boss.get("/outbox").text
+    check("...and the Outbox is unsealed", "s0@blind.test" in page)
+
+    print("\n56. With the setting off, nothing is hidden from the buyer at all")
+    plain, plain_line = live_auction(db, org, buyer, unit, item, vendors, "BLIND-2",
+                                     blind=False)
+    one.post(f"/auctions/{plain.id}/bid",
+             data={"line_id": str(plain_line.id), "unit_price": "4100", "freight": "10",
+                   "packaging": "0", "other": "", "tax_name": "GST", "tax_percent": "18"},
+             follow_redirects=False)
+    page = boss.get(f"/auctions/{plain.id}").text
+    check("the buyer sees the real name while it is still running", alpha in page)
+    check("...and the Outbox is open", "s0@blind.test" in boss.get("/outbox").text)
+
+    print("\n57. A bidder is still never shown another bidder, either way")
+    for where, blind_on in ((auction.id, True), (plain.id, False)):
+        page = two.get(f"/auctions/{where}").text
+        check(f"the rival's name is absent{' (blind)' if blind_on else ' (open)'}",
+              alpha not in page)
+
+    db.close()
+
+
 def main():
     part_one()
     part_two()
     part_three()
+    part_four()
     print("\n" + "-" * 64)
     if FAILS:
         print(f"{len(FAILS)} check(s) FAILED:")

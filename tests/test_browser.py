@@ -186,7 +186,52 @@ def run(page, base):
           bidder2.locator(".alert").first.inner_text()[:44])
 
     # ------------------------------------------------------------------ 4
-    print("\n4. The award screen books the price the buyer can see")
+    print("\n4. A whole bid typed into the board, against the board's own refresh")
+    # The board rewrites itself every few seconds. A bid is now a form with a
+    # price, delivery costs and named taxes on it, and none of those boxes has
+    # an id - which is exactly how they used to be wiped mid-word.
+    bidder.goto(base + "/auctions")
+    bidder.wait_for_load_state("networkidle")
+    bidder.locator("a[href^='/auctions/']", has_text="Bearings").first.click()
+    bidder.wait_for_load_state("networkidle")
+    bidder.wait_for_timeout(500)
+    form = bidder.locator("form[action$='/bid']").first
+    tax_name = form.locator("input[name^=tax_name]").first
+    tax_name.click()
+    tax_name.fill("")
+    tax_name.type("Cess on steel", delay=25)
+    form.locator("input[name^=tax_percent]").first.fill("5")
+    form.locator("input[name=freight]").fill("1234")
+    form.locator("input[name=unit_price]").fill("150")
+    form.locator("[data-add-tax]").first.click()
+    rows = form.locator(".tax-row")
+    rows.nth(rows.count() - 1).locator("input[name^=tax_name]").fill("State levy")
+    rows.nth(rows.count() - 1).locator("input[name^=tax_percent]").fill("2")
+    added = rows.count()
+    bidder.wait_for_timeout(9500)                      # past two refreshes
+    check("a tax name survives the refresh", tax_name.input_value() == "Cess on steel",
+          tax_name.input_value())
+    check("...so does the freight beside it",
+          form.locator("input[name=freight]").input_value() == "1234")
+    check("...and a tax row the bidder added themselves",
+          form.locator(".tax-row").count() == added
+          and form.locator(".tax-row").nth(added - 1)
+                  .locator("input[name^=tax_name]").input_value() == "State levy",
+          f"{form.locator('.tax-row').count()} rows")
+    live = " ".join(form.locator(".all-in-note").first.inner_text().split())
+    check("...and the all-in total is still worked out", "All in" in live, live[:60])
+    check("the tax name box offers the usual names to pick from",
+          tax_name.get_attribute("list") == "tax-names"
+          and bidder.locator("#tax-names option").count() > 5)
+    form.locator("button:has-text('Place bid for')").first.click()
+    bidder.wait_for_load_state("networkidle")
+    bidder.wait_for_timeout(600)
+    record = " ".join(bidder.locator(".bid-record").first.inner_text().split())
+    check("the bid goes in with both taxes exactly as typed",
+          "Cess on steel" in record and "State levy" in record, record[:90])
+
+    # ------------------------------------------------------------------ 5
+    print("\n5. The award screen books the price the buyer can see")
     page.goto(url)
     page.wait_for_timeout(300)
     page.locator("button:has-text('Close bidding now')").click()
@@ -215,7 +260,7 @@ def run(page, base):
           winner_labels.first.inner_text() if winner_labels.count() else "none")
 
     # ------------------------------------------------------------------ 5
-    print("\n5. Nothing threw along the way")
+    print("\n6. Nothing threw along the way")
     bidder.goto(base + "/logout")
     bidder.wait_for_timeout(200)
     page.goto(base + "/login")

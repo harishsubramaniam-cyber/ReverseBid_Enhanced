@@ -106,8 +106,10 @@ Sample sign-ins (after `python seed.py`), password `demo1234`:
 * Live rank (L1, L2, L3…) and lowest-bid visibility, each switchable per auction.
 * **Minimum decrement** (how much lower each bid must be) and **maximum decrement**
   (the biggest drop allowed in one step), as a fixed amount or a percentage.
-* Hidden bidder names — bidders see each other as “Bidder A”, “Bidder B”; the buyer always
-  sees the real names.
+* **Hide bidder names from the buyer** until the award is complete, so the winner is chosen on
+  the figures and not on who the buyer would rather deal with. Every bid, document, message,
+  audit entry, report and email alert says “Bidder A” until the auction is awarded; then the
+  real names come back everywhere at once. Bidders never see each other by name either way.
 * **Auto-extension**: a bid inside the closing window pushes the finish line back, with a
   configurable trigger, extension length and maximum number of extensions.
 * **Give bidders more time**, by hand, while an auction is live: the closing time moves later

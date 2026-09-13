@@ -849,9 +849,35 @@ def detail(auction_id: int, request: Request, tab: str = "bids",
         tab = "bids"
     context["tab"] = tab
     if tab == "history":
-        context["logs"] = audit.for_auction(db, auction.id)
+        logs = audit.for_auction(db, auction.id)
+        context["logs"] = logs
+        context["actor_label"] = _actor_labels(db, auction, logs, user)
     help_key = "auction_detail_buyer" if user.is_buyer_side else "auction_detail_vendor"
     return render(request, "auction_detail.html", context, user=user, db=db, help_key=help_key)
+
+
+def _actor_labels(db: Session, auction: Auction, logs, viewer: User):
+    """Who did each thing, as this viewer is allowed to know it.
+
+    The trail records a person's name and email against every action, and the
+    people who place bids work for the bidders. While the buyer is being kept
+    from the names, the trail has to say "Bidder A" too - otherwise the most
+    complete record on the platform is also the way around the blind.
+    """
+    if not engine.blind_to_buyer(auction) or not viewer.is_buyer_side:
+        return lambda log: log.actor_label
+    actor_ids = {log.actor_id for log in logs if log.actor_id}
+    actors = ({row.id: row for row in
+               db.query(User).filter(User.id.in_(actor_ids)).all()} if actor_ids else {})
+    names = engine.naming(db, auction, viewer)
+
+    def label(log):
+        actor = actors.get(log.actor_id)
+        if actor is None or not actor.vendor_id:
+            return log.actor_label          # your own side, or the scheduler
+        return names["bidder_label"](actor.vendor_id)
+
+    return label
 
 
 def build_detail_context(db: Session, auction: Auction, user: User) -> dict:
@@ -894,8 +920,7 @@ def build_detail_context(db: Session, auction: Auction, user: User) -> dict:
     awards = db.query(Award).filter(Award.auction_id == auction.id).all()
     return {
         "auction": auction, "lines": lines, "summary": summary,
-        "aliases": engine.alias_map(db, auction),
-        "display_name": lambda vendor: engine.display_name(db, auction, vendor, user),
+        **engine.naming(db, auction, user),
         "messages": messages_q.order_by(Message.created_at.asc()).all(),
         "overall": engine.overall_ranking(db, auction),
         # What the two ways of awarding cost. The buyer sees it on the Award

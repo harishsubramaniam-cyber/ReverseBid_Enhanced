@@ -396,8 +396,11 @@ def main() -> int:                                                      # noqa: 
     check("the bidder sees their own on the documents tab",
           "Mill certificate 22B.pdf" in
           v1.get(f"/auctions/{doc_auction.id}?tab=documents").text)
-    check("the buyer sees whose it is",
-          "Acme 1" in b.get(f"/auctions/{doc_auction.id}?tab=documents").text)
+    # This auction hides the bidders' names from the buyer until it is
+    # awarded, so the document is attributed the way everything else is.
+    doc_page = b.get(f"/auctions/{doc_auction.id}?tab=documents").text
+    check("the buyer sees which bidder it came from, by the name they know them by",
+          "from Bidder" in doc_page and "Acme 1" not in doc_page)
     r = v2.post(f"/auctions/{doc_auction.id}/documents/{mine.id}/remove",
                 follow_redirects=False)
     db.expire_all()

@@ -108,8 +108,12 @@ SECRET_KEY = _secret_key()
 #: so "is the new version actually running?" - the question behind an
 #: astonishing amount of wasted time - can be answered by looking, both on the
 #: Outbox page and at /healthz, without signing in or reading a deploy log.
+#: Only the first line, and only so much of it: this goes in a page footer and
+#: a health check, and somebody will sooner or later paste release notes into
+#: the file. A stamp, not a changelog.
 try:
-    VERSION = (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip() or "unknown"
+    _stamp = (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
+    VERSION = (_stamp.splitlines()[0].strip()[:120] if _stamp else "") or "unknown"
 except OSError:
     VERSION = "unknown"
 APP_NAME = _text("RA_APP_NAME", "ReverseBid") or "ReverseBid"

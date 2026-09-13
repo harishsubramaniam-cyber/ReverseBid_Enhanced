@@ -87,10 +87,9 @@
 {% if auction.compare_landed %}
 <div class="alert info"><svg><use href="#i-info"/></svg>
   <div><b>Compared on the delivered price.</b>
-  {% if user.is_buyer_side %}Each bidder fills in their own freight, packaging and other
-    costs for the whole auction, and the taxes on each item. Those are added to what they
-    bid, so the ranking is like-for-like. The starting price is the most you will pay
-    all-in, per unit.
+  {% if user.is_buyer_side %}Every bid carries its own freight, packaging and other costs and
+    the taxes on it. Those are added to what was bid, so the ranking is like-for-like. The
+    starting price is the most you will pay all-in, per unit.
   {% else %}You are ranked on what the buyer would actually pay: your bid, plus this item's
     share of your delivery costs
     {%- if my_charges.any %} ({{ my_charges.describe() }}, {{ fmt_money(my_charges.total) }}
@@ -146,7 +145,11 @@
           <td class="num">{% if auction.max_decrement %}{% if auction.decrement_type.value == 'percent' %}{{ auction.max_decrement }}%{% else %}{{ fmt_money(auction.max_decrement) }}{% endif %}{% else %}no limit{% endif %}</td></tr>
         <tr><td>Bidders see their rank</td><td class="num">{{ 'yes' if auction.show_rank else 'no' }}</td></tr>
         <tr><td>Bidders see the lowest price</td><td class="num">{{ 'yes' if auction.show_lowest_bid else 'no' }}</td></tr>
-        <tr><td>Bidder names hidden from each other</td><td class="num">{{ 'yes' if auction.hide_bidder_names else 'no' }}</td></tr>
+        <tr><td>Bidder names hidden from you until you award
+          <span class="muted small">— so the winner is picked on the figures</span></td>
+          <td class="num">{% if not auction.hide_bidder_names %}no
+            {% elif blind_bidders %}yes — still hidden
+            {% else %}yes — lifted when you awarded{% endif %}</td></tr>
         <tr><td>Auto-extension</td><td class="num">{% if auction.auto_extend %}+{{ (auction.extend_by_seconds/60)|round(1) }} min, up to {{ auction.max_extensions }}×{% else %}off{% endif %}</td></tr>
         <tr><td>Items without a ceiling</td><td class="num">{{ summary.open_lines }} of {{ auction.lines|length }}</td></tr>
         <tr><td>Compared on <span class="muted small">— bid alone, or bid plus delivery</span></td>
@@ -154,11 +157,21 @@
       </tbody></table></div>
       {% if user.is_buyer_side %}
       <h3 style="margin-top:14px">Invited bidders — and who we email</h3>
+      {% if blind_bidders %}
+      <p class="muted small" style="margin:0 0 6px">You invited these companies, so you know
+        who is in the auction — but not which of them is which. That pairing comes back
+        when you award. They are listed in name order for the same reason.</p>
+      {% endif %}
       <div class="table-wrap"><table>
-        <thead><tr><th>Vendor</th><th>Alias shown to others</th><th>Emails go to</th>
+        <thead><tr><th>Vendor</th>{% if not blind_bidders %}<th>Alias shown on the board</th>{% endif %}
+          <th>Emails go to</th>
           {% if auction.compare_landed %}<th>Delivery costs they quoted</th>{% endif %}</tr></thead><tbody>
-        {% for part in auction.participants %}
-        <tr><td>{{ part.vendor.name }}</td><td class="muted">{{ aliases.get(part.vendor_id) }}</td>
+        {# In name order while the blind is on: the order they were invited in is
+           the order the aliases were handed out in, which would give it away. #}
+        {% for part in (auction.participants | sort(attribute='vendor.name') if blind_bidders
+                        else auction.participants) %}
+        <tr><td>{{ part.vendor.name }}</td>
+          {% if not blind_bidders %}<td class="muted">{{ aliases.get(part.vendor_id) }}</td>{% endif %}
           <td class="small">
             {% for address in recipients_for(part.vendor_id) %}<div>{{ address }}</div>{% endfor %}
             {% if part.notify_emails %}<span class="pill warn">set for this auction</span>{% endif %}
@@ -166,7 +179,12 @@
           {% if auction.compare_landed %}
           {% set quoted = charges_for(part.vendor_id) %}
           <td class="small">
-            {% if quoted.any %}{{ quoted.describe() }}
+            {% if blind_bidders %}
+              {# The figures themselves are on the board against an alias. Printing
+                 them here beside a name would join the two up. #}
+              {% if quoted.any or quoted.declared %}<span class="pill good">quoted with their bid</span>
+              {% else %}<span class="pill warn">not bid yet</span>{% endif %}
+            {% elif quoted.any %}{{ quoted.describe() }}
               <div class="muted tiny">{{ fmt_money(quoted.total) }} for the whole auction,
                 shared across the items</div>
             {% elif quoted.declared %}<span class="muted">nothing — their price is their
@@ -208,7 +226,7 @@
         {% if choice.best_whole %}
         <div class="v">{{ fmt_money(choice.best_whole.total) }}</div>
         <div class="muted small">Cheapest single supplier:
-          <b>{{ choice.best_whole.name }}</b></div>
+          <b>{{ display_name(choice.best_whole.vendor) }}</b></div>
         {% else %}
         <div class="v muted">—</div>
         <div class="muted small">Nobody priced every item.</div>
@@ -329,6 +347,11 @@
       <div class="card-head"><h3>{{ 'From the bidders' if user.is_buyer_side else 'Your documents' }}</h3>
         <span class="spacer"></span>
         <span class="muted small">{{ 'Only you can see these.' if user.is_buyer_side else 'Only the buyer sees these.' }}</span></div>
+      {% if blind_bidders %}
+      <p class="muted small" style="margin:0 0 6px">Names are hidden until you award, so these
+        say “Bidder A”. A file a bidder named after their own company can still give them
+        away — nothing can hide what is inside the document itself.</p>
+      {% endif %}
       {% set theirs = docs | rejectattr('vendor_id', 'none') | list %}
       {% if theirs %}
       <div class="doc-list">
@@ -338,7 +361,7 @@
           <div class="name">
             <b><a href="/auctions/{{ auction.id }}/documents/{{ doc.id }}">{{ doc.filename }}</a></b>
             <span class="muted tiny">{{ doc.size_label }}
-              {%- if user.is_buyer_side %} · from {{ doc.vendor.name }}{% endif %}
+              {%- if user.is_buyer_side %} · from {{ display_name(doc.vendor) }}{% endif %}
               {%- if doc.note %} · {{ doc.note }}{% endif %}
               · {{ fmt_dt(doc.created_at, False) }}</span>
           </div>
@@ -383,16 +406,19 @@
       {% for part in (auction.participants | selectattr('vendor_id', 'in', talking) | list) + ordered %}
         {% set thread = messages | selectattr('vendor_id','equalto',part.vendor_id) | list %}
         <details class="qa" {{ 'open' if thread }}>
-          <summary>{{ part.vendor.name }} <span class="muted">({{ thread|length }} message(s))</span></summary>
+          <summary>{{ display_name(part.vendor) }} <span class="muted">({{ thread|length }} message(s))</span></summary>
           <div class="a">
             {% for m in thread %}
               <div class="msg {{ 'mine' if m.sender_id == user.id }}">
-                <div class="who">{{ m.sender.name }} · {{ fmt_dt(m.created_at) }}</div>{{ m.body }}</div>
+                {# A bidder's own people are named by their company, or by its
+                   alias while the blind is on. Your side is always named. #}
+                <div class="who">{{ display_name(part.vendor) if m.sender.vendor_id else m.sender.name }}
+                  · {{ fmt_dt(m.created_at) }}</div>{{ m.body }}</div>
             {% endfor %}
             <form method="post" action="/auctions/{{ auction.id }}/messages" style="margin-top:8px">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <input type="hidden" name="vendor_id" value="{{ part.vendor_id }}">
-              <textarea name="body" placeholder="Reply to {{ part.vendor.name }}…" required></textarea>
+              <textarea name="body" placeholder="Reply to {{ display_name(part.vendor) }}…" required></textarea>
               <button class="btn sm" type="submit" style="margin-top:6px">Send</button>
             </form>
           </div>
@@ -419,7 +445,7 @@
       <span class="muted small">Every action, unedited.</span></div>
     <ul class="timeline">
       {% for log in logs %}
-      <li><b>{{ log.action }}</b> — {{ log.actor_label }}
+      <li><b>{{ log.action }}</b> — {{ actor_label(log) }}
         <div class="muted small">{{ fmt_dt(log.created_at) }}{% if log.ip %} · {{ log.ip }}{% endif %}</div>
         {% if log.detail %}<div class="small mono" style="word-break:break-word">{{ log.detail }}</div>{% endif %}</li>
       {% endfor %}

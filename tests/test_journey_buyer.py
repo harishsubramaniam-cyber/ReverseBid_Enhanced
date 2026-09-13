@@ -325,7 +325,38 @@ def run(browser, base, tmp, watch):                                   # noqa: C9
               f"{got.stat().st_size} bytes")
 
     # ------------------------------------------------------------------ 9
-    print("\n9. The trail it all left")
+    print("\n9. An auction where the buyer asked not to be told who is bidding")
+    # A different auction: this one was created with "Hide bidder names from
+    # Buyer" on, so the buyer decides on the figures and learns the names when
+    # they award. The point of doing it here is that it has to survive a real
+    # person clicking around, not just a unit test.
+    buyer.goto(base + "/auctions?status=live")
+    buyer.wait_for_load_state("networkidle")
+    blind_link = buyer.locator("a[href^='/auctions/']", has_text="item by item").first
+    blind_id = int(blind_link.get_attribute("href").rstrip("/").split("/")[-1])
+    buyer.goto(f"{base}/auctions/{blind_id}")
+    buyer.wait_for_load_state("networkidle")
+    buyer.wait_for_timeout(700)
+    watch.note_page(buyer, "a blind auction, from the buyer's chair")
+    board = buyer.locator("#live-board").inner_text()
+    check("the board shows aliases instead of the companies",
+          "Bidder A" in board and "Alpha Supplies" not in board
+          and "Bharat Traders" not in board, board[:70].replace("\n", " "))
+    check("...with the bids themselves all still there", "L1" in board and "L2" in board)
+    buyer.goto(f"{base}/auctions/{blind_id}?tab=details")
+    buyer.wait_for_timeout(400)
+    details = buyer.locator("body").inner_text()
+    check("the invited list still says which companies are in it",
+          "Alpha Supplies" in details)
+    check("...but does not pair any of them with an alias", "Bidder A" not in details)
+    check("...and says plainly that the names come back at the award",
+          "until you award" in details or "when you award" in details)
+    buyer.goto(f"{base}/reports/auction/{blind_id}")
+    buyer.wait_for_timeout(400)
+    check("the report keeps the blind too",
+          "Alpha Supplies" not in buyer.locator("body").inner_text())
+
+    print("\n10. The trail it all left")
     buyer.goto(f"{base}/auctions/{auction_id}?tab=history")
     buyer.wait_for_timeout(400)
     watch.note_page(buyer, "the audit trail")

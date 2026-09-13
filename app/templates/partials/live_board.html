@@ -5,6 +5,13 @@
 {% set live = auction.status.value == 'live' %}
 {% set can_bid = live and user.is_vendor %}
 
+{# The taxes people actually charge, offered as you type. It is a suggestion
+   list, not a menu: anything at all can be typed over it. #}
+<datalist id="tax-names">
+  {% for name in ['GST', 'IGST', 'CGST', 'SGST', 'UTGST', 'VAT', 'Cess', 'Excise duty',
+                  'Customs duty', 'Service tax', 'TCS'] %}<option value="{{ name }}"></option>{% endfor %}
+</datalist>
+
 {% if whole_auction and can_bid %}
 {# This auction is awarded in one piece, so it is bid for in one piece: every
    item priced on one form, one set of delivery costs for the consignment, and
@@ -202,8 +209,8 @@
           {% for bid in entry.ranked %}
             <tr class="{{ 'is-best' if loop.index == 1 }}">
               <td><span class="rank {{ 'l1' if loop.index == 1 }}{{ 'l2' if loop.index == 2 }}{{ 'l3' if loop.index == 3 }}">L{{ loop.index }}</span></td>
-              <td class="strong">{{ bid.vendor.name }}
-                <div class="muted tiny">{{ aliases.get(bid.vendor_id) }}</div></td>
+              <td class="strong">{{ display_name(bid.vendor) }}
+                {% if not blind_bidders %}<div class="muted tiny">{{ aliases.get(bid.vendor_id) }}</div>{% endif %}</td>
               <td class="num mono">{{ fmt_qty(line.qty) }} {{ line.unit.code if line.unit else '' }}</td>
               <td class="num mono {{ '' if auction.compare_landed else 'strong' }}">{{ fmt_money(bid.unit_price) }}</td>
               {% if auction.compare_landed %}
@@ -483,7 +490,7 @@
         <th class="num">Line total</th><th>Status</th></tr></thead><tbody>
       {% for bid in entry.history|sort(attribute='created_at', reverse=True) %}
         <tr><td class="small">{{ fmt_dt(bid.created_at, False) }}</td>
-          <td>{{ bid.vendor.name }}</td>
+          <td>{{ display_name(bid.vendor) }}</td>
           <td class="num mono">{{ fmt_money(bid.unit_price) }}</td>
           <td class="num mono">{{ fmt_money(bid.total) }}</td>
           <td>{% if bid.withdrawn %}<span class="pill bad">withdrawn</span>{% else %}<span class="pill good">live</span>{% endif %}</td></tr>
@@ -514,8 +521,8 @@
       <tr class="{{ 'is-best' if loop.index == 1 }}{{ ' is-mine' if is_me }}">
         <td><span class="rank {{ 'l1' if loop.index == 1 }}">L{{ row.rank }}</span></td>
         <td class="strong">
-          {% if user.is_buyer_side %}{{ row.vendor.name }}
-            <div class="muted tiny">{{ row.alias }}</div>
+          {% if user.is_buyer_side %}{{ display_name(row.vendor) }}
+            {% if not blind_bidders %}<div class="muted tiny">{{ row.alias }}</div>{% endif %}
           {% elif is_me %}You
           {% else %}Another bidder{% endif %}</td>
         <td class="small">{{ fmt_dt(row.quote.created_at, False) }}</td>
@@ -537,8 +544,7 @@
     {% for row in overall %}
       <tr class="{{ 'is-best' if loop.index == 1 }}">
         <td><span class="rank {{ 'l1' if loop.index == 1 }}">L{{ loop.index }}</span></td>
-        <td class="strong">{{ vendor_by_id[row.vendor_id].name
-                              if row.vendor_id in vendor_by_id else '—' }}</td>
+        <td class="strong">{{ bidder_label(row.vendor_id) }}</td>
         <td class="num mono">{{ row.lines }} of {{ lines|length }}</td>
         <td class="num mono strong">{{ fmt_money(row.total) }}</td>
         {# Against the baseline of the items they priced, not the whole

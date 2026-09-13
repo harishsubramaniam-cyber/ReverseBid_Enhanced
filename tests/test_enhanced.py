@@ -94,7 +94,7 @@ def flash_of(response) -> str:
 
 
 def make_auction(db, buyer, vendors, specs, *, landed_on=True, min_dec=0.0,
-                 title="Delivered", minutes=90, mode="line"):
+                 title="Delivered", minutes=90, mode="line", blind=True):
     """``specs`` is a list of (item, unit, qty, ceiling).
 
     ``mode`` is how the buyer says the business will be handed out, which is
@@ -109,6 +109,7 @@ def make_auction(db, buyer, vendors, specs, *, landed_on=True, min_dec=0.0,
                       original_end_at=now + timedelta(minutes=minutes),
                       decrement_type=DecrementType.ABSOLUTE, min_decrement=min_dec,
                       compare_landed=landed_on, auto_extend=False, award_mode=mode,
+                      hide_bidder_names=blind,
                       published_at=now - timedelta(hours=1))
     db.add(auction)
     db.flush()
@@ -903,7 +904,10 @@ def main() -> int:                                                   # noqa: C90
     print("\n15. Before awarding: the quotes as written, or what they really cost")
     # S2 quotes the keener price and far more freight, so each view puts a
     # different bidder first - which is the whole reason for having both.
-    views = make_auction(db, buyer, vendors, [(pens, unit, 100, 200.0)], title="Two views")
+    # Named bidders on this one: the two views are about which PRICE leads,
+    # and the screen has to say who that is for the check to read it.
+    views = make_auction(db, buyer, vendors, [(pens, unit, 100, 200.0)], title="Two views",
+                         blind=False)
     vline = views.lines[0]
     set_charges(one, views, freight=1000)            # 10 a unit
     set_charges(two, views, freight=4000)            # 40 a unit
@@ -1026,7 +1030,8 @@ def main() -> int:                                                   # noqa: C90
           "best on everything" not in page)
 
     print("   the quick-fill button follows the basis the award is decided on")
-    both = make_auction(db, buyer, vendors, [(pens, unit, 100, 200.0)], title="Both views")
+    both = make_auction(db, buyer, vendors, [(pens, unit, 100, 200.0)], title="Both views",
+                        blind=False)          # named, so the check can read the row
     b_line = both.lines[0]
     set_charges(one, both, freight=1000)          # 10 a unit
     set_charges(two, both, freight=4000)          # 40 a unit

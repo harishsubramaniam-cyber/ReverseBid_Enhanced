@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
-from .. import mailer
+from .. import mailer, sealing
 from ..db import get_db
 from ..emails_util import EmailError, validate
 from ..models import EmailMessage, Notification, User
@@ -41,8 +41,16 @@ def outbox(request: Request, q: str = "", user: User = Depends(buyer_side),
         query = query.filter(EmailMessage.subject.ilike(like) |
                              EmailMessage.to_email.ilike(like))
     rows = query.order_by(EmailMessage.created_at.desc()).limit(200).all()
+    seal = sealing.Seal(db, user)
+    if q:
+        # Searching by address must not answer a question the auction is
+        # keeping from them: a hit on a sealed bidder's address would say who
+        # is bidding. Sealed rows only survive a search on their subject.
+        needle = q.lower()
+        rows = [row for row in rows
+                if not seal.sealed(row) or needle in (row.subject or "").lower()]
     return render(request, "outbox.html",
-                  {"rows": rows, "q": q, "mail": mailer.settings_summary(),
+                  {"rows": rows, "q": q, "mail": mailer.settings_summary(), "seal": seal,
                    "waiting": db.query(EmailMessage).filter(
                        EmailMessage.status == "queued",
                        EmailMessage.org_id == user.org_id).count(),
@@ -87,6 +95,12 @@ def outbox_detail(message_id: int, request: Request, user: User = Depends(buyer_
         message = None      # another organisation's correspondence
     if not message:
         raise HTTPException(404, "That email is not in the outbox.")
+    if sealing.Seal(db, user).sealed(message):
+        return redirect("/outbox", "That email went to a bidder on an auction whose names are "
+                                   "hidden from you until you award it. The Outbox can tell "
+                                   "you it was sent and whether it arrived, but not who to or "
+                                   "what it said — reading it would say who is bidding.",
+                        kind="error")
     return render(request, "outbox_detail.html", {"m": message}, user=user, db=db,
                   help_key="outbox")
 
@@ -103,5 +117,7 @@ def outbox_raw(message_id: int, user: User = Depends(buyer_side),
     if message is not None and message.org_id != user.org_id:
         message = None      # another organisation's correspondence
     if not message:
+        raise HTTPException(404, "That email is not in the outbox.")
+    if sealing.Seal(db, user).sealed(message):
         raise HTTPException(404, "That email is not in the outbox.")
     return HTMLResponse(message.html_body)

@@ -258,8 +258,9 @@
   <label class="check"><input type="checkbox" name="show_lowest_bid" {{ flag('show_lowest_bid', true) }}>
     <span><span class="t">Show the current lowest price</span>
       <span class="d">{{ FIELD_HELP.show_lowest_bid }}</span></span></label>
+  <h4 style="margin:16px 0 8px">What you see while it runs</h4>
   <label class="check"><input type="checkbox" name="hide_bidder_names" {{ flag('hide_bidder_names', true) }}>
-    <span><span class="t">Hide bidder names from each other</span>
+    <span><span class="t">Hide bidder names from Buyer</span>
       <span class="d">{{ FIELD_HELP.hide_bidder_names }}</span></span></label>
 
   <h4 style="margin:18px 0 8px">How prices are compared</h4>
@@ -270,8 +271,7 @@
   <div class="alert info small {{ '' if landed_on }}" id="landed-note"
        style="{{ '' if landed_on else 'display:none' }}">
     <svg><use href="#i-info"/></svg>
-    <div>Each bidder is asked for their own <b>freight, packaging and other costs</b> — one
-    figure each for the whole auction, which is how a supplier quotes them — and for the
+    <div>Each bidder is asked for their own <b>freight, packaging and other costs</b>, and for the
     <b>taxes on each item</b>, as percentages. The board then ranks everyone on what you
     would actually pay: the bid, plus that item's share of their delivery costs, plus tax.
     The starting price means the most you will pay <b>all-in</b>, per unit.</div></div>

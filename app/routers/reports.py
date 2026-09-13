@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from .. import reporting
+from .. import engine, reporting
 from ..db import get_db
 from ..models import Auction, AuctionStatus, User
 from ..security import buyer_side
@@ -101,7 +101,11 @@ def auction_report(auction_id: int, request: Request, user: User = Depends(buyer
     if not auction or auction.org_id != user.org_id:
         raise HTTPException(404, "That auction does not exist.")
     data = reporting.auction_summary_report(db, auction)
-    return render(request, "report_auction.html", {"data": data, "auction": auction},
+    return render(request, "report_auction.html",
+                  {"data": data, "auction": auction,
+                   # The report names every bidder against every bid, so while
+                   # the blind is on it has to speak in aliases like the rest.
+                   **engine.naming(db, auction, user)},
                   user=user, db=db, help_key="reports")
 
 
